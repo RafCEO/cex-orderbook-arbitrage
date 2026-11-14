@@ -1,0 +1,49 @@
+# cex-orderbook-arbitrage configuration
+# Precedence: CLI flags > this file > built-in defaults.
+
+exchanges:
+  binance:
+    enabled: true
+    maker_fee_bps: 10
+    taker_fee_bps: 10
+    rate_limit_per_sec: 10
+  kraken:
+    enabled: true
+    maker_fee_bps: 16
+    taker_fee_bps: 26
+    rate_limit_per_sec: 1
+  bybit:
+    enabled: true
+    maker_fee_bps: 10
+    taker_fee_bps: 10
+    rate_limit_per_sec: 5
+
+# Seconds between polling ticks.
+poll_interval: 2.0
+
+# Default trade size used for depth walks, in quote currency (e.g. USDT).
+default_volume_quote: 1000
+
+# Minimum net spread (bps) for an opportunity to be emitted.
+min_spread_bps: 5.0
+
+# Orderbook depth requested from exchanges (levels per side).
+depth_levels: 50
+
+# Staleness guard: snapshots older than this are dropped (milliseconds).
+max_snapshot_age_ms: 5000
+
+# SQLite database path for the opportunities table.
+db_path: data/session.db
+
+# False-spike filter: rolling median of net spread over the last N readings;
+# a reading deviating more than spike_deviation_bps from the median is
+# suppressed until the route confirms for `confirmations` consecutive ticks.
+spike_filter:
+  window: 20
+  deviation_bps: 25
+  confirmations: 2
+
+# Triangular routes evaluated per exchange: (base/quote, base/mid, mid/quote).
+triangular_triplets:
+  - [BTC/USDT, ETH/BTC, ETH/USDT]
