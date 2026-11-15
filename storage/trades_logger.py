@@ -13,6 +13,7 @@ from typing import Any
 import aiosqlite
 
 from execution.base import ExecutionReport
+from storage.logger import new_session_id
 
 TRADES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS trades (
     sell_fee REAL NOT NULL,
     fees_quote REAL NOT NULL,
     realized_pnl_quote REAL NOT NULL,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -41,13 +43,13 @@ TRADES_INSERT_SQL = (
     "INSERT INTO trades "
     "(executed_at, mode, simulated, route, pair, buy_exchange, sell_exchange, "
     "budget_quote, buy_base, buy_vwap, buy_fee, sell_base, sell_vwap, sell_fee, "
-    "fees_quote, realized_pnl_quote, status) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "fees_quote, realized_pnl_quote, status, session_id) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
-def trade_row(report: ExecutionReport) -> tuple[Any, ...]:
-    """Flatten an ExecutionReport into one trades-table row."""
+def trade_row(report: ExecutionReport, session_id: str) -> tuple[Any, ...]:
+    """Flatten an ExecutionReport into one trades-table row stamped with session_id."""
     buy = report.buy_fill
     sell = report.sell_fill
     return (
@@ -68,15 +70,19 @@ def trade_row(report: ExecutionReport) -> tuple[Any, ...]:
         float(report.fees_quote),
         float(report.realized_pnl_quote),
         report.status.value,
+        session_id,
     )
 
 
 class TradeLogger:
     """Background drainer for trades: record() enqueues; a worker batches INSERTs."""
 
-    def __init__(self, db_path: str = "data/session.db", batch_size: int = 8) -> None:
+    def __init__(
+        self, db_path: str = "data/session.db", batch_size: int = 8, session_id: str | None = None
+    ) -> None:
         self.db_path = db_path
         self.batch_size = batch_size
+        self.session_id = session_id if session_id is not None else new_session_id()
         self._queue: asyncio.Queue[ExecutionReport] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
         self._db: aiosqlite.Connection | None = None
@@ -87,6 +93,11 @@ class TradeLogger:
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute(TRADES_SCHEMA)
+        # migrate pre-session-scoping dbs; duplicate-column errors are expected.
+        with contextlib.suppress(sqlite3.OperationalError):
+            await self._db.execute(
+                "ALTER TABLE trades ADD COLUMN session_id TEXT NOT NULL DEFAULT ''"
+            )
         await self._db.commit()
         self._running = True
         self._task = asyncio.create_task(self._drain())
@@ -130,23 +141,32 @@ class TradeLogger:
     async def _insert_batch(self, batch: list[ExecutionReport] | None) -> None:
         if not batch or self._db is None:
             return
-        await self._db.executemany(TRADES_INSERT_SQL, [trade_row(r) for r in batch])
+        await self._db.executemany(
+            TRADES_INSERT_SQL, [trade_row(r, self.session_id) for r in batch]
+        )
         await self._db.commit()
 
     async def trade_stats(self) -> dict[str, Any]:
-        """Executed trade count, win rate and realized P&L sums for the session summary."""
+        """Trade count, win rate and realized P&L sums for THIS run only."""
         db = self._db
         if db is None:
             return {"count": 0}
-        async with db.execute("SELECT COUNT(*) FROM trades") as cur:
+        async with db.execute(
+            "SELECT COUNT(*) FROM trades WHERE session_id = ?", (self.session_id,)
+        ) as cur:
             row = await cur.fetchone()
             count = int(row[0]) if row is not None else 0
         if count == 0:
             return {"count": 0}
-        async with db.execute("SELECT status, COUNT(*) FROM trades GROUP BY status") as cur:
+        async with db.execute(
+            "SELECT status, COUNT(*) FROM trades WHERE session_id = ? GROUP BY status",
+            (self.session_id,),
+        ) as cur:
             by_status = {r[0]: r[1] for r in await cur.fetchall()}
         async with db.execute(
-            "SELECT realized_pnl_quote, fees_quote FROM trades WHERE status != 'rejected'"
+            "SELECT realized_pnl_quote, fees_quote FROM trades "
+            "WHERE session_id = ? AND status != 'rejected'",
+            (self.session_id,),
         ) as cur:
             executed = await cur.fetchall()
         pnl = [Decimal(str(r[0])) for r in executed]
@@ -162,13 +182,14 @@ class TradeLogger:
             "win_rate": wins / executed_count if executed_count else 0.0,
             "realized_pnl": float(sum(pnl, Decimal(0))),
             "total_fees": float(sum(fees, Decimal(0))),
+            "session_id": self.session_id,
         }
 
     def export_csv(self, path: str) -> int:
-        """Synchronous dump of the trades table to CSV; returns rows written."""
+        """Dump only this run's trades to CSV; returns rows written."""
         db = sqlite3.connect(self.db_path)
         try:
-            cur = db.execute("SELECT * FROM trades")
+            cur = db.execute("SELECT * FROM trades WHERE session_id = ?", (self.session_id,))
             columns = [d[0] for d in cur.description]
             rows = cur.fetchall()
             Path(path).parent.mkdir(parents=True, exist_ok=True)

@@ -29,6 +29,7 @@ async def test_start_creates_schema_and_directories(tmp_path: Path) -> None:
             columns = [r[1] for r in db.execute("PRAGMA table_info(opportunities)")]
         assert "net_spread_bps" in columns
         assert "suppressed" in columns
+        assert "session_id" in columns
     finally:
         await logger.close()
 
@@ -148,4 +149,109 @@ def test_insert_sql_columns_align_with_schema() -> None:
     ]
     insert_cols = INSERT_SQL.split("(")[1].split(")")[0].replace(" ", "").split(",")
     assert insert_cols == columns
-    assert len(insert_cols) == 15
+    assert len(insert_cols) == 16
+
+
+async def test_stats_and_export_exclude_previous_sessions(db_path: str, tmp_path: Path) -> None:
+    """Rows stamped with another session id never leak into this run's stats/export."""
+    previous = OpportunityLogger(db_path=db_path, session_id="old" * 11)
+    await previous.start()
+    try:
+        previous.log(make_opportunity(net_spread_bps="99"))
+        await previous._insert_batch(previous._drain_queue())
+    finally:
+        await previous.close()
+
+    current = OpportunityLogger(db_path=db_path, session_id="new" * 11)
+    await current.start()
+    try:
+        current.log(make_opportunity(net_spread_bps="4"))
+        current.log(make_opportunity(net_spread_bps="10"))
+        await current._insert_batch(current._drain_queue())
+        stats = await current.session_stats()
+        assert stats["count"] == 2
+        assert stats["mean_net_bps"] == pytest.approx(7.0)
+        assert stats["per_pair"] == {"BTC/USDT": 2}
+        assert stats["session_id"] == "new" * 11
+    finally:
+        await current.close()
+
+    csv_path = str(tmp_path / "current.csv")
+    written = current.export_csv(csv_path)
+    assert written == 2
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert len(rows) == 3  # header + 2 data rows
+    assert all(row[rows[0].index("session_id")] == "new" * 11 for row in rows[1:])
+
+
+async def test_two_loggers_share_db_isolated_stats(db_path: str) -> None:
+    """Distinct session ids over one db file keep fully independent stats."""
+    first = OpportunityLogger(db_path=db_path, session_id="aaa")
+    second = OpportunityLogger(db_path=db_path, session_id="bbb")
+    await first.start()
+    await second.start()
+    try:
+        first.log(make_opportunity(net_spread_bps="20"))
+        second.log(make_opportunity(net_spread_bps="40"))
+        second.log(make_opportunity(net_spread_bps="60"))
+        await first._insert_batch(first._drain_queue())
+        await second._insert_batch(second._drain_queue())
+        assert (await first.session_stats())["count"] == 1
+        assert (await second.session_stats())["count"] == 2
+    finally:
+        await first.close()
+        await second.close()
+
+
+async def test_start_migrates_legacy_db_without_session_column(tmp_path: Path) -> None:
+    """Pre-scoping db files get the session_id column added on start."""
+    db_path = str(tmp_path / "legacy.db")
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            "CREATE TABLE opportunities ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, detected_at TEXT NOT NULL, "
+            "route TEXT NOT NULL, pair TEXT NOT NULL, buy_exchange TEXT NOT NULL, "
+            "sell_exchange TEXT NOT NULL, volume_quote REAL NOT NULL, "
+            "gross_spread_bps REAL NOT NULL, slippage_bps REAL NOT NULL, "
+            "fees_bps REAL NOT NULL, net_spread_bps REAL NOT NULL, "
+            "net_delta_quote REAL NOT NULL, fill_ratio REAL NOT NULL, "
+            "buy_latency_ms REAL NOT NULL, sell_latency_ms REAL NOT NULL, "
+            "suppressed INTEGER NOT NULL DEFAULT 0)"
+        )
+        # one legacy row from an old run; it must not count toward the new session
+        db.execute(
+            "INSERT INTO opportunities (detected_at, route, pair, buy_exchange, "
+            "sell_exchange, volume_quote, gross_spread_bps, slippage_bps, fees_bps, "
+            "net_spread_bps, net_delta_quote, fill_ratio, buy_latency_ms, "
+            "sell_latency_ms, suppressed) VALUES ('2026-01-01T00:00:00+00:00', "
+            "'cross_exchange', 'BTC/USDT', 'exA', 'exB', 1000.0, 30.0, 5.0, 15.0, "
+            "88.0, 1.0, 1.0, 10.0, 12.0, 0)"
+        )
+
+    logger = OpportunityLogger(db_path=db_path)
+    await logger.start()
+    try:
+        with sqlite3.connect(db_path) as db:
+            columns = [r[1] for r in db.execute("PRAGMA table_info(opportunities)")]
+        assert "session_id" in columns
+        stats = await logger.session_stats()
+        assert stats == {"count": 0}  # legacy row is excluded
+    finally:
+        await logger.close()
+
+
+async def test_default_session_ids_are_unique_and_stamped(db_path: str) -> None:
+    """Each logger run gets its own uuid hex and stamps inserted rows with it."""
+    logger = OpportunityLogger(db_path=db_path)
+    await logger.start()
+    try:
+        logger.log(make_opportunity())
+        await logger._insert_batch(logger._drain_queue())
+        with sqlite3.connect(db_path) as db:
+            stored = db.execute("SELECT session_id FROM opportunities").fetchone()[0]
+        assert stored == logger.session_id
+    finally:
+        await logger.close()
+    other = OpportunityLogger(db_path=db_path)
+    assert other.session_id != logger.session_id

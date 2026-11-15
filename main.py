@@ -30,7 +30,7 @@ from execution.live_executor import LiveExecutor, load_credentials
 from execution.paper_executor import PaperExecutor
 from execution.portfolio import Portfolio
 from execution.risk import RiskConfig, RiskGuard
-from storage.logger import OpportunityLogger
+from storage.logger import OpportunityLogger, new_session_id
 from storage.trades_logger import TradeLogger
 
 BUILTIN_DEFAULTS: dict[str, Any] = {
@@ -360,11 +360,15 @@ async def fetch_all(
 
 
 def _summary_panel(
-    stats: dict[str, Any], db_path: str, trade_stats: dict[str, Any] | None = None
+    stats: dict[str, Any],
+    db_path: str,
+    trade_stats: dict[str, Any] | None = None,
+    session_id: str = "",
 ) -> Panel:
     t = Table(show_header=False, box=None)
     t.add_column(style="bold cyan")
     t.add_column()
+    t.add_row("session", session_id[:8] if session_id else "-")
     t.add_row("rows", str(stats.get("count", 0)))
     if stats.get("count"):
         t.add_row("mean net bps", f"{stats['mean_net_bps']:.2f}")
@@ -419,9 +423,10 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     fees = build_fee_schedules(cfg)
 
     db_path = str(cfg["db_path"])
-    opp_logger = OpportunityLogger(db_path=db_path)
+    session_id = new_session_id()
+    opp_logger = OpportunityLogger(db_path=db_path, session_id=session_id)
     await opp_logger.start()
-    trade_logger = TradeLogger(db_path=db_path)
+    trade_logger = TradeLogger(db_path=db_path, session_id=session_id)
     await trade_logger.start()
 
     session = aiohttp.ClientSession(
@@ -503,16 +508,20 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         trade_stats = await trade_logger.trade_stats() if trading else None
         await opp_logger.close()
         await trade_logger.close()
-        console.print(_summary_panel(stats, db_path, trade_stats))
+        console.print(_summary_panel(stats, db_path, trade_stats, session_id))
         if args.export:
             rows = opp_logger.export_csv(args.export)
-            console.print(f"[green]CSV exported to {args.export} ({rows} rows)[/green]")
+            console.print(
+                f"[green]CSV exported to {args.export} ({rows} rows, "
+                f"session {session_id[:8]})[/green]"
+            )
             if trading:
                 stem = Path(args.export)
                 trades_csv = str(stem.with_name(f"trades_{stem.name}"))
                 trade_rows = trade_logger.export_csv(trades_csv)
                 console.print(
-                    f"[green]trades CSV exported to {trades_csv} ({trade_rows} rows)[/green]"
+                    f"[green]trades CSV exported to {trades_csv} ({trade_rows} rows, "
+                    f"session {session_id[:8]})[/green]"
                 )
     return 0
 

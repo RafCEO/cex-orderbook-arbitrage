@@ -79,6 +79,7 @@ async def test_start_creates_trades_table(db_path: str) -> None:
         assert "realized_pnl_quote" in columns
         assert "simulated" in columns
         assert "mode" in columns
+        assert "session_id" in columns
     finally:
         await logger.close()
 
@@ -165,9 +166,10 @@ def test_trade_row_flattens_report_with_missing_legs() -> None:
     rejected = ExecutionReport(
         intent=intent, status=ExecutionStatus.REJECTED, mode="paper", simulated=True
     )
-    row = trade_row(rejected)
+    row = trade_row(rejected, "sess1")
     assert row[16] == "rejected"
     assert row[8] == 0.0  # buy_base zero when leg absent
+    assert row[17] == "sess1"
 
 
 def test_insert_sql_columns_align_with_schema() -> None:
@@ -178,4 +180,95 @@ def test_insert_sql_columns_align_with_schema() -> None:
     ]
     insert_cols = TRADES_INSERT_SQL.split("(")[1].split(")")[0].replace(" ", "").split(",")
     assert insert_cols == columns
-    assert len(insert_cols) == 17
+    assert len(insert_cols) == 18
+
+
+async def test_trade_stats_and_export_exclude_previous_sessions(
+    db_path: str, tmp_path: Path
+) -> None:
+    """Trades stamped with another session id never leak into this run's stats/export."""
+    previous = TradeLogger(db_path=db_path, session_id="old" * 11)
+    await previous.start()
+    try:
+        previous.record(make_report(pnl="50"))
+        await previous._insert_batch(previous._drain_queue())
+    finally:
+        await previous.close()
+
+    current = TradeLogger(db_path=db_path, session_id="new" * 11)
+    await current.start()
+    try:
+        current.record(make_report(pnl="3"))
+        current.record(make_report(status=ExecutionStatus.REJECTED, pnl="0"))
+        await current._insert_batch(current._drain_queue())
+        stats = await current.trade_stats()
+        assert stats["count"] == 2
+        assert stats["executed"] == 1
+        assert stats["wins"] == 1
+        assert stats["losses"] == 0
+        assert stats["realized_pnl"] == pytest.approx(3.0)
+        assert stats["session_id"] == "new" * 11
+    finally:
+        await current.close()
+
+    csv_path = str(tmp_path / "trades.csv")
+    written = current.export_csv(csv_path)
+    assert written == 2
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert len(rows) == 3  # header + 2 data rows
+    assert all(row[rows[0].index("session_id")] == "new" * 11 for row in rows[1:])
+
+
+async def test_two_trade_loggers_share_db_isolated_stats(db_path: str) -> None:
+    """Distinct session ids over one db file keep fully independent trade stats."""
+    first = TradeLogger(db_path=db_path, session_id="aaa")
+    second = TradeLogger(db_path=db_path, session_id="bbb")
+    await first.start()
+    await second.start()
+    try:
+        first.record(make_report(pnl="1"))
+        second.record(make_report(pnl="2"))
+        second.record(make_report(pnl="3"))
+        await first._insert_batch(first._drain_queue())
+        await second._insert_batch(second._drain_queue())
+        assert (await first.trade_stats())["count"] == 1
+        assert (await second.trade_stats())["count"] == 2
+    finally:
+        await first.close()
+        await second.close()
+
+
+async def test_trade_logger_migrates_legacy_db_without_session_column(tmp_path: Path) -> None:
+    """Pre-scoping db files get the trades.session_id column added on start."""
+    db_path = str(tmp_path / "legacy.db")
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            "CREATE TABLE trades ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, executed_at TEXT NOT NULL, "
+            "mode TEXT NOT NULL, simulated INTEGER NOT NULL, route TEXT NOT NULL, "
+            "pair TEXT NOT NULL, buy_exchange TEXT NOT NULL, sell_exchange TEXT NOT NULL, "
+            "budget_quote REAL NOT NULL, buy_base REAL NOT NULL, buy_vwap REAL NOT NULL, "
+            "buy_fee REAL NOT NULL, sell_base REAL NOT NULL, sell_vwap REAL NOT NULL, "
+            "sell_fee REAL NOT NULL, fees_quote REAL NOT NULL, "
+            "realized_pnl_quote REAL NOT NULL, status TEXT NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO trades (executed_at, mode, simulated, route, pair, "
+            "buy_exchange, sell_exchange, budget_quote, buy_base, buy_vwap, buy_fee, "
+            "sell_base, sell_vwap, sell_fee, fees_quote, realized_pnl_quote, status) "
+            "VALUES ('2026-01-01T00:00:00+00:00', 'paper', 1, 'cross_exchange', "
+            "'BTC/USDT', 'exA', 'exB', 100.0, 1.0, 100.0, 0.1, 1.0, 101.0, 0.1, "
+            "0.2, 0.8, 'filled')"
+        )
+
+    logger = TradeLogger(db_path=db_path)
+    await logger.start()
+    try:
+        with sqlite3.connect(db_path) as db:
+            columns = [r[1] for r in db.execute("PRAGMA table_info(trades)")]
+        assert "session_id" in columns
+        stats = await logger.trade_stats()
+        assert stats == {"count": 0}  # legacy row excluded from the new session
+    finally:
+        await logger.close()
