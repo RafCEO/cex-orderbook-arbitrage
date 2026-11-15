@@ -7,6 +7,7 @@ Rolling-median spike filter, per route:
     once C consecutive readings satisfy net >= min_spread_bps; a confirmed
     route bypasses the deviation test so persistent shifts are emitted.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -62,10 +63,7 @@ class SpikeFilterState:
         else:
             self.streak = 0
         confirmed = self.streak >= self.confirmations
-        is_outlier = (
-            median is not None
-            and abs(net_bps - median) > Decimal(str(self.deviation_bps))
-        )
+        is_outlier = median is not None and abs(net_bps - median) > Decimal(str(self.deviation_bps))
         allow = confirmed or not is_outlier
         if allow:
             self.readings.append(net_bps)
@@ -117,7 +115,7 @@ class SpreadDetector:
         fresh = {k: s for k, s in snapshots.items() if self._fresh(s)}
 
         by_pair: dict[str, list[OrderBookSnapshot]] = {}
-        for (exchange, pair), snap in fresh.items():
+        for (_exchange, pair), snap in fresh.items():
             by_pair.setdefault(pair, []).append(snap)
 
         for pair, snaps in by_pair.items():
@@ -128,7 +126,9 @@ class SpreadDetector:
                     if i == j:
                         continue
                     opp = evaluate_cross_exchange(
-                        buy, sell, volume_quote,
+                        buy,
+                        sell,
+                        volume_quote,
                         fees.get(buy.exchange, FeeSchedule()),
                         fees.get(sell.exchange, FeeSchedule()),
                     )
@@ -154,7 +154,7 @@ class SpreadDetector:
             for exchange, legs in by_exchange.items():
                 if any(leg is None for leg in legs):
                     continue
-                a, b, c = legs  # type: ignore[misc]
+                a, b, c = (leg for leg in legs if leg is not None)
                 fee = fees.get(exchange, FeeSchedule())
                 opp = evaluate_triangular(a, b, c, volume_quote, fee)
                 if opp is None:

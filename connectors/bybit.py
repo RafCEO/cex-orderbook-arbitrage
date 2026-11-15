@@ -1,7 +1,8 @@
 """Bybit v5 spot orderbook connector (public REST, no keys)."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from connectors.base import BaseConnector
 from core.models import OrderBookSnapshot
@@ -21,7 +22,7 @@ class BybitConnector(BaseConnector):
         if payload.get("retCode") != 0:
             raise ValueError(f"bybit: {payload.get('retMsg')} for {pair}")
         result = payload["result"]
-        exchange_ts = datetime.fromtimestamp(result["ts"] / 1000, tz=timezone.utc)
+        exchange_ts = datetime.fromtimestamp(result["ts"] / 1000, tz=UTC)
         return self._snapshot(
             exchange=self.exchange_name,
             pair=pair,

@@ -1,7 +1,9 @@
 """Async SQLite persistence for detected opportunities (WAL, batched inserts)."""
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import sqlite3
 import statistics
@@ -76,17 +78,15 @@ class OpportunityLogger:
                 while len(batch) < self.batch_size and not self._queue.empty():
                     batch.append(self._queue.get_nowait())
                 await self._insert_batch(batch)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     async def close(self) -> None:
         self._running = False
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
         if self._db is not None and not self._queue.empty():
             await self._insert_batch(self._drain_queue())
@@ -132,7 +132,8 @@ class OpportunityLogger:
         if db is None:
             return {"count": 0}
         async with db.execute("SELECT COUNT(*) FROM opportunities") as cur:
-            count = (await cur.fetchone())[0]
+            row = await cur.fetchone()
+            count = int(row[0]) if row is not None else 0
         if count == 0:
             return {"count": 0}
         async with db.execute("SELECT net_spread_bps FROM opportunities") as cur:
@@ -141,9 +142,7 @@ class OpportunityLogger:
             "SELECT * FROM opportunities ORDER BY net_spread_bps DESC LIMIT 1"
         ) as cur:
             best = await cur.fetchone()
-        async with db.execute(
-            "SELECT pair, COUNT(*) FROM opportunities GROUP BY pair"
-        ) as cur:
+        async with db.execute("SELECT pair, COUNT(*) FROM opportunities GROUP BY pair") as cur:
             per_pair = {r[0]: r[1] for r in await cur.fetchall()}
         return {
             "count": count,

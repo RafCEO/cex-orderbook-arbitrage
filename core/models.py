@@ -1,15 +1,16 @@
 """Strict domain models for orderbook snapshots, depth fills and arbitrage routes."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class RouteType(str, Enum):
+class RouteType(StrEnum):
     CROSS_EXCHANGE = "cross_exchange"
     TRIANGULAR = "triangular"
 
@@ -67,13 +68,14 @@ class OrderBookSnapshot(BaseModel):
 
     @property
     def age_ms(self) -> float:
-        return (datetime.now(timezone.utc) - self.received_at).total_seconds() * 1000
+        return (datetime.now(UTC) - self.received_at).total_seconds() * 1000
 
     @property
     def mid_price(self) -> Decimal | None:
-        if not self.bids or not self.asks:
+        top_bid, top_ask = self.top_bid, self.top_ask
+        if top_bid is None or top_ask is None:
             return None
-        return (self.top_bid + self.top_ask) / 2  # type: ignore[operator]
+        return (top_bid + top_ask) / 2
 
     @property
     def top_bid(self) -> Decimal | None:
@@ -86,9 +88,10 @@ class OrderBookSnapshot(BaseModel):
     @property
     def spread_bps(self) -> Decimal | None:
         mid = self.mid_price
-        if mid is None or mid == 0:
+        top_bid, top_ask = self.top_bid, self.top_ask
+        if mid is None or mid == 0 or top_bid is None or top_ask is None:
             return None
-        return (self.top_ask - self.top_bid) / mid * Decimal(10_000)  # type: ignore[operator]
+        return (top_ask - top_bid) / mid * Decimal(10_000)
 
     def bid_liquidity_quote(self, depth: int | None = None) -> Decimal:
         n = self.liquidity_depth if depth is None else depth
@@ -145,7 +148,7 @@ class ArbitrageOpportunity(BaseModel):
     fill_ratio: Decimal
     buy_latency_ms: float
     sell_latency_ms: float
-    detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    detected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     suppressed: bool = False
 
     @property

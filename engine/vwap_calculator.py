@@ -7,6 +7,7 @@ Formulas (quote = counter-currency, base = traded asset):
     walk by base    : consume levels until sum(a_i) >= target_base
 Partial last level is scaled pro-rata, so filled_quote never overshoots the target.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -41,10 +42,7 @@ def walk_depth(levels: list[OrderBookLevel], target_quote: Decimal) -> FillResul
     for level in levels:
         remaining = target_quote - filled_quote
         level_notional = level.notional
-        if level_notional <= remaining:
-            take_base = level.amount
-        else:
-            take_base = remaining / level.price
+        take_base = level.amount if level_notional <= remaining else remaining / level.price
         filled_quote += take_base * level.price
         base_filled += take_base
         consumed += 1
@@ -112,12 +110,12 @@ def evaluate_cross_exchange(
 ) -> ArbitrageOpportunity | None:
     """Buy base on exchange A asks, sell the filled base on exchange B bids, taker fees both legs.
 
-        gross_spread_bps = (bid_B - ask_A) / ask_A * 10_000
-        slippage_bps     = (vwap_buy - ask_A) / ask_A * 10_000      (buy walk cost)
-                         + (bid_B - vwap_sell) / bid_B * 10_000      (sell walk cost)
-        fees_bps         = taker_A + taker_B
-        net_spread_bps   = gross - slippage - fees
-        net_delta_quote  = proceeds_gross * (1 - taker_B/1e4) - cost_gross * (1 + taker_A/1e4)
+    gross_spread_bps = (bid_B - ask_A) / ask_A * 10_000
+    slippage_bps     = (vwap_buy - ask_A) / ask_A * 10_000      (buy walk cost)
+                     + (bid_B - vwap_sell) / bid_B * 10_000      (sell walk cost)
+    fees_bps         = taker_A + taker_B
+    net_spread_bps   = gross - slippage - fees
+    net_delta_quote  = proceeds_gross * (1 - taker_B/1e4) - cost_gross * (1 + taker_A/1e4)
     """
     if not buy_snap.asks or not sell_snap.bids:
         return None
@@ -184,7 +182,9 @@ def evaluate_triangular(
     """
     if not snap_a.asks or not snap_b.asks or not snap_c.bids:
         return None
-    top_ask_a, top_ask_b, top_bid_c = snap_a.asks[0].price, snap_b.asks[0].price, snap_c.bids[0].price
+    top_ask_a = snap_a.asks[0].price
+    top_ask_b = snap_b.asks[0].price
+    top_bid_c = snap_c.bids[0].price
     if min(top_ask_a, top_ask_b, top_bid_c) <= 0:
         return None
 

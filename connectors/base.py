@@ -1,4 +1,5 @@
 """Async REST connector base: rate limiting, retry with full-jitter backoff, latency tracking."""
+
 from __future__ import annotations
 
 import abc
@@ -6,7 +7,7 @@ import asyncio
 import logging
 import random
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import aiohttp
@@ -107,7 +108,8 @@ class BaseConnector(abc.ABC):
             await self.rate_limiter.acquire()
             started = time.monotonic()
             try:
-                async with self.session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
+                timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+                async with self.session.get(url, params=params, timeout=timeout) as resp:
                     self.last_request_ms = (time.monotonic() - started) * 1000
                     if resp.status >= 400:
                         raise ConnectorError(f"{self.exchange_name}: HTTP {resp.status} for {url}")
@@ -115,7 +117,7 @@ class BaseConnector(abc.ABC):
                 self.consecutive_failures = 0
                 self.last_error = None
                 return payload
-            except (aiohttp.ClientError, asyncio.TimeoutError, ConnectorError) as exc:
+            except (TimeoutError, aiohttp.ClientError, ConnectorError) as exc:
                 last_exc = exc
                 self.consecutive_failures = attempt + 1
                 self.last_error = str(exc)
@@ -124,10 +126,16 @@ class BaseConnector(abc.ABC):
                 self.next_retry_not_before = time.monotonic() + jittered
                 logger.warning(
                     "%s: attempt %d/%d failed (%s), backoff %.2fs",
-                    self.exchange_name, attempt + 1, self.max_retries, exc, jittered,
+                    self.exchange_name,
+                    attempt + 1,
+                    self.max_retries,
+                    exc,
+                    jittered,
                 )
                 await asyncio.sleep(jittered)
-        raise ConnectorError(f"{self.exchange_name}: {url} failed after {self.max_retries} retries: {last_exc}")
+        raise ConnectorError(
+            f"{self.exchange_name}: {url} failed after {self.max_retries} retries: {last_exc}"
+        )
 
     @staticmethod
     def _snapshot(
@@ -138,10 +146,7 @@ class BaseConnector(abc.ABC):
         exchange_ts: datetime,
     ) -> OrderBookSnapshot:
         def levels(raw: list[list[str]]) -> list[OrderBookLevel]:
-            return [
-                OrderBookLevel(price=Decimal(p), amount=Decimal(q))
-                for p, q in raw
-            ]
+            return [OrderBookLevel(price=Decimal(p), amount=Decimal(q)) for p, q in raw]
 
         return OrderBookSnapshot(
             exchange=exchange,
@@ -149,5 +154,5 @@ class BaseConnector(abc.ABC):
             bids=levels(raw_bids),
             asks=levels(raw_asks),
             exchange_ts=exchange_ts,
-            received_at=datetime.now(timezone.utc),
+            received_at=datetime.now(UTC),
         )

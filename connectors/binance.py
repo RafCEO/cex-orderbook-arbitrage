@@ -1,7 +1,8 @@
 """Binance spot orderbook connector (public REST, no keys)."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from connectors.base import BaseConnector
 from core.models import OrderBookSnapshot
@@ -20,9 +21,9 @@ class BinanceConnector(BaseConnector):
             raise ValueError(f"binance: malformed depth payload for {pair}")
         epoch_ms = payload.get("E")
         exchange_ts = (
-            datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+            datetime.fromtimestamp(epoch_ms / 1000, tz=UTC)
             if epoch_ms is not None
-            else datetime.now(timezone.utc)
+            else datetime.now(UTC)
         )
         return self._snapshot(
             exchange=self.exchange_name,

@@ -1,7 +1,8 @@
 """Kraken spot orderbook connector (public REST, no keys)."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from connectors.base import BaseConnector
 from core.models import OrderBookSnapshot
@@ -41,7 +42,7 @@ class KrakenConnector(BaseConnector):
         if book_key is None:
             raise ValueError(f"kraken: no depth key in response for {pair}")
         book = result[book_key]
-        exchange_ts = datetime.now(timezone.utc)
+        exchange_ts = datetime.now(UTC)
         return self._snapshot(
             exchange=self.exchange_name,
             pair=pair,

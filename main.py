@@ -1,4 +1,5 @@
 """cex-orderbook-arbitrage entrypoint: config, orchestrator loop, shutdown summary."""
+
 from __future__ import annotations
 
 import argparse
@@ -35,9 +36,24 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
     "spike_filter": {"window": 20, "deviation_bps": 25.0, "confirmations": 2},
     "triangular_triplets": [["BTC/USDT", "ETH/BTC", "ETH/USDT"]],
     "exchanges": {
-        "binance": {"enabled": True, "maker_fee_bps": 10.0, "taker_fee_bps": 10.0, "rate_limit_per_sec": 10.0},
-        "kraken": {"enabled": True, "maker_fee_bps": 16.0, "taker_fee_bps": 26.0, "rate_limit_per_sec": 1.0},
-        "bybit": {"enabled": True, "maker_fee_bps": 10.0, "taker_fee_bps": 10.0, "rate_limit_per_sec": 5.0},
+        "binance": {
+            "enabled": True,
+            "maker_fee_bps": 10.0,
+            "taker_fee_bps": 10.0,
+            "rate_limit_per_sec": 10.0,
+        },
+        "kraken": {
+            "enabled": True,
+            "maker_fee_bps": 16.0,
+            "taker_fee_bps": 26.0,
+            "rate_limit_per_sec": 1.0,
+        },
+        "bybit": {
+            "enabled": True,
+            "maker_fee_bps": 10.0,
+            "taker_fee_bps": 10.0,
+            "rate_limit_per_sec": 5.0,
+        },
     },
 }
 
@@ -78,14 +94,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Read-only public-data monitoring; no order execution."
         ),
     )
-    parser.add_argument("--pairs", default="BTC/USDT,ETH/USDT", help="comma-separated canonical pairs, e.g. BTC/USDT,ETH/USDT")
-    parser.add_argument("--volume", type=float, default=None, help="trade size in quote currency (default from config)")
-    parser.add_argument("--min-spread", type=float, default=None, help="minimum net spread in bps (default from config)")
-    parser.add_argument("--export", default=None, metavar="PATH.csv", help="dump session table to CSV at exit")
-    parser.add_argument("--interval", type=float, default=None, help="poll interval seconds (default from config)")
-    parser.add_argument("--duration", type=float, default=0.0, help="run for N seconds, 0 = until Ctrl+C")
+    parser.add_argument(
+        "--pairs",
+        default="BTC/USDT,ETH/USDT",
+        help="comma-separated canonical pairs, e.g. BTC/USDT,ETH/USDT",
+    )
+    parser.add_argument(
+        "--volume",
+        type=float,
+        default=None,
+        help="trade size in quote currency (default from config)",
+    )
+    parser.add_argument(
+        "--min-spread",
+        type=float,
+        default=None,
+        help="minimum net spread in bps (default from config)",
+    )
+    parser.add_argument(
+        "--export",
+        default=None,
+        metavar="PATH.csv",
+        help="dump session table to CSV at exit",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="poll interval seconds (default from config)",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="run for N seconds, 0 runs until Ctrl+C",
+    )
     parser.add_argument("--config", default="config.yaml", help="config file path")
-    parser.add_argument("--exchanges", default=None, help="comma-separated exchange subset, e.g. binance,bybit")
+    parser.add_argument(
+        "--exchanges",
+        default=None,
+        help="comma-separated exchange subset, e.g. binance,bybit",
+    )
     return parser.parse_args(argv)
 
 
@@ -156,7 +205,10 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     min_spread = float(args.min_spread if args.min_spread is not None else cfg["min_spread_bps"])
     interval = float(args.interval if args.interval is not None else cfg["poll_interval"])
     duration = float(args.duration)
-    requested = [e.strip() for e in args.exchanges.split(",")] if args.exchanges else enabled_exchanges(cfg)
+    if args.exchanges:
+        requested = [e.strip() for e in args.exchanges.split(",")]
+    else:
+        requested = enabled_exchanges(cfg)
     enabled = [e for e in requested if e in CONNECTOR_CLASSES]
     if not enabled:
         console.print("[red]no enabled exchanges; check --exchanges / config[/red]")
@@ -227,7 +279,9 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s"
+    )
     args = parse_args(argv)
     cfg = load_config(args.config)
     try:
