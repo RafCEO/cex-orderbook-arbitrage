@@ -1,7 +1,7 @@
 [project]
 name = "cex-orderbook-arbitrage"
-version = "1.1.0"
-description = "Cross-exchange crypto orderbook spread monitor: depth VWAP, slippage and net-of-fees arbitrage analytics"
+version = "1.2.0"
+description = "Cross-exchange crypto orderbook spread monitor and arbitrage trading bot: depth VWAP analytics, paper/testnet/live execution"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "RafCEO" }]
@@ -64,7 +64,7 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = "-q"
 
 [tool.coverage.run]
-source = ["core", "connectors", "engine", "storage", "cli"]
+source = ["core", "connectors", "engine", "storage", "cli", "execution"]
 branch = true
 
 [tool.coverage.report]

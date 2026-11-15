@@ -12,6 +12,7 @@ COPY connectors/ connectors/
 COPY engine/ engine/
 COPY storage/ storage/
 COPY cli/ cli/
+COPY execution/ execution/
 COPY config.yaml .
 COPY main.py .
 

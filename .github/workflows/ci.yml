@@ -33,7 +33,7 @@ jobs:
         run: ruff format --check .
 
       - name: Type check (mypy)
-        run: mypy core connectors engine storage cli main.py tests
+        run: mypy core connectors engine storage cli execution main.py tests
 
       - name: Test with coverage gate
         run: python -m pytest --cov --cov-report=term

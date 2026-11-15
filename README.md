@@ -2,12 +2,13 @@
 
 [![CI](https://github.com/RafCEO/cex-orderbook-arbitrage/actions/workflows/ci.yml/badge.svg)](https://github.com/RafCEO/cex-orderbook-arbitrage/actions/workflows/ci.yml)
 
-Cross-exchange crypto spread monitor and orderbook depth analyzer. Polls public
-REST orderbooks from Binance, Kraken and Bybit, walks real depth to compute
-volume-weighted fill prices, and evaluates cross-exchange and triangular routes
-net of taker fees, slippage and stale-data risk. It is a read-only analytics
-and monitoring tool built on public market data: it places no orders, requires
-no API keys, and does not execute anything.
+Cross-exchange crypto spread monitor and orderbook depth analyzer with an
+optional execution layer. Polls public REST orderbooks from Binance, Kraken
+and Bybit, walks real depth to compute volume-weighted fill prices, and
+evaluates cross-exchange and triangular routes net of taker fees, slippage
+and stale-data risk. Monitor mode is read-only analytics on public data; the
+`paper`, `testnet` and `live` modes add an execution layer on top of the same
+detection pipeline.
 
 ## Architecture
 
@@ -62,9 +63,17 @@ no API keys, and does not execute anything.
 | `connectors/kraken.py` | Kraken public depth endpoint with XBT/BTC normalization |
 | `engine/vwap_calculator.py` | Depth-walk VWAP, slippage, cross-exchange and triangular route math |
 | `engine/detector.py` | Latency guard, per-pair route enumeration, rolling-median spike filter |
+| `execution/base.py` | OrderIntent / ExecutionReport models, executor contract, intent builder |
+| `execution/auth.py` | Pure signing functions for Binance, Bybit and Kraken private endpoints |
+| `execution/paper_executor.py` | Simulated two-leg fills against live fetched orderbooks |
+| `execution/live_executor.py` | Signed LIMIT IOC order placement (Binance + Bybit, testnet and live) |
+| `execution/portfolio.py` | Virtual balances, inventory with cost basis, realized/unrealized P&L |
+| `execution/risk.py` | Pre-trade caps, spread gate, daily-loss circuit breaker |
 | `storage/logger.py` | Async queued SQLite persistence, session stats, CSV export |
+| `storage/trades_logger.py` | Same pattern for executed trades, stats and CSV export |
 | `cli/dashboard.py` | rich Live terminal dashboard |
-| `main.py` | CLI, config precedence, poll loop, graceful shutdown |
+| `cli/trading_panel.py` | Positions/P&L panel, fills feed, HALTED state |
+| `main.py` | CLI, config precedence, poll loop, trading pipeline, graceful shutdown |
 
 ## The math
 
@@ -146,6 +155,8 @@ read-only.
 | `--duration` | `0` | Stop after N seconds; 0 runs until Ctrl+C |
 | `--config` | `config.yaml` | Config file path |
 | `--exchanges` | all enabled | Comma-separated subset, e.g. `binance,bybit` |
+| `--mode` | `monitor` | `monitor` (read-only), `paper` (simulated fills), `testnet`, `live` |
+| `--ack-live-risk` | off | Required acknowledgement to start live mode |
 
 Precedence: CLI flags override `config.yaml`; `config.yaml` overrides built-in
 defaults.
@@ -176,6 +187,70 @@ triangular_triplets:
 
 `triangular_triplets` entries are `[base/quote, mid/base, mid/quote]` roles;
 each triplet is evaluated on every exchange that lists all three pairs.
+
+## Trading modes
+
+`--mode` selects how detected opportunities are handled:
+
+| Mode | Behavior |
+|---|---|
+| `monitor` | Default. Read-only spread monitoring, byte-for-byte the original behavior. |
+| `paper` | Confirmed opportunities pass a risk gate, then fill against the live fetched orderbooks: buy leg walks real asks, sell leg walks real bids, taker fees per exchange apply, a virtual portfolio tracks balances and P&L. No keys, no orders, fills clearly labeled simulated. |
+| `testnet` | Same pipeline, but legs execute as signed LIMIT IOC orders on Binance/Bybit testnet. Exchanges without credentials degrade to monitor-only with a warning. |
+| `live` | Real orders with real funds. Refuses to start without env credentials AND `--ack-live-risk`; prints a risk panel at startup. |
+
+Kraken trading is intentionally unsupported: it offers no testnet, so the risk
+of shipping untested signing against live capital is not taken. Kraken books
+still participate in monitoring and paper mode.
+
+Credentials are read exclusively from the environment and never written
+anywhere: `BINANCE_API_KEY`/`BINANCE_API_SECRET` and
+`BYBIT_API_KEY`/`BYBIT_API_SECRET`. Live orders default to LIMIT IOC at the
+walked-VWAP price padded by `price_buffer_bps` for price protection; naked
+market orders are an explicit `market_orders: true` escape hatch.
+
+The `trading:` config section controls starting paper balances, per-trade and
+exposure caps, the daily-loss circuit breaker, the minimum spread to act on,
+and order style:
+
+```yaml
+trading:
+  mode: monitor
+  starting_balances: { binance: 1000, kraken: 1000, bybit: 1000 }
+  max_trade_quote: 100
+  max_exposure_quote: 500
+  daily_loss_limit_quote: 50
+  min_act_spread_bps: 5.0
+  market_orders: false
+  price_buffer_bps: 5.0
+```
+
+Executed trades persist to a `trades` table in the same SQLite database and
+export alongside opportunities (`trades_<name>.csv` next to the opportunities
+CSV).
+
+## Risk disclaimer (read before live mode)
+
+This software touches real-money pathways when run with `--mode live`.
+Be honest with yourself about what it can and cannot do:
+
+- **Expect to lose money in live mode at this data granularity.** The bot
+  polls REST endpoints on a timer. Between two polls the market moves; the
+  spreads it acts on are already stale by hundreds of milliseconds to
+  seconds. Professional arbitrage operates on websocket L2 data with
+  colocation. Net spreads after fees on polled data are typically negative.
+- **Paper fills are simulated and labeled as such.** They walk real books but
+  assume no queue position, no latency between legs, no partial adhesion and
+  a free instant transfer between exchanges. Real execution will be worse.
+- **Capital risk is yours.** Testnets behave differently from production
+  (liquidity, matching, rate limits). Even with the risk guard, losses are
+  bounded per-trade and per-day only to the extent the configuration is
+  sound and the process stays alive.
+- Credentials are env-only, never logged, never persisted. Losing control of
+  an environment variable is equivalent to losing the funds; use exchange
+  key restrictions (IP allowlists, no withdrawal permission).
+
+This is not financial advice.
 
 ## Testing
 
@@ -227,9 +302,12 @@ the container filesystem; mount a volume over `/app/data` to persist it.
 - Fee schedules are static assumptions; real fills face variable tiers,
   rebates, withdrawal constraints, transfer latency and counterparty risk that
   this tool does not model.
-- No order execution of any kind. This software performs no trades and must
-  not be construed as trading or financial advice. Market data may be delayed,
-  inaccurate or unavailable; use at your own risk.
+- Paper fills walk live books but simulate free instant transfers between
+  exchanges and no queue position; they are optimistic by construction.
+- Kraken order execution is intentionally unsupported.
+- This software is not trading or financial advice. Market data may be delayed,
+  inaccurate or unavailable; use at your own risk and never risk capital you
+  cannot afford to lose.
 
 ## License
 
