@@ -146,7 +146,7 @@ class _RequestContext:
 
 
 class FakeAiohttpSession:
-    """Scripted aiohttp.ClientSession: pops one outcome per GET and records calls."""
+    """Scripted aiohttp.ClientSession: pops one outcome per request and records calls."""
 
     def __init__(self, outcomes: list[FakeResponse | BaseException] | None = None) -> None:
         self.outcomes: list[FakeResponse | BaseException] = list(outcomes or [])
@@ -155,6 +155,25 @@ class FakeAiohttpSession:
 
     def get(self, url: str, *, params: dict[str, str] | None = None, **_: Any) -> _RequestContext:
         self.calls.append({"url": url, "params": dict(params or {})})
+        outcome = self.outcomes.pop(0) if self.outcomes else FakeResponse(payload={})
+        return _RequestContext(outcome)
+
+    def post(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        **_: Any,
+    ) -> _RequestContext:
+        self.calls.append(
+            {
+                "method": "POST",
+                "url": url,
+                "params": dict(params or {}),
+                "headers": dict(headers or {}),
+            }
+        )
         outcome = self.outcomes.pop(0) if self.outcomes else FakeResponse(payload={})
         return _RequestContext(outcome)
 
