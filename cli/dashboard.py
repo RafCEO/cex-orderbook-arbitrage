@@ -150,8 +150,10 @@ class Dashboard:
                 )
         return lines
 
-    def render(self) -> RenderableType:
+    def render(self, trading: RenderableType | None = None) -> RenderableType:
         parts: list[RenderableType] = [self._header(), self._routes_table()]
+        if trading is not None:
+            parts.append(trading)
         parts.extend(self._status_lines())
         return Panel(Group(*parts), title="cex-orderbook-arbitrage", border_style="blue")
 

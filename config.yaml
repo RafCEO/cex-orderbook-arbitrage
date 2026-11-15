@@ -47,3 +47,27 @@ spike_filter:
 # Triangular routes evaluated per exchange: (base/quote, base/mid, mid/quote).
 triangular_triplets:
   - [BTC/USDT, ETH/BTC, ETH/USDT]
+
+# Trading configuration; active only when --mode paper/testnet/live is used.
+# Monitor mode ignores this section entirely.
+trading:
+  # Default operating mode when --mode is absent: monitor | paper | testnet | live.
+  mode: monitor
+
+  # Paper-mode virtual starting balances per exchange, in quote currency.
+  starting_balances:
+    binance: 1000
+    kraken: 1000
+    bybit: 1000
+
+  # Risk limits (quote currency / bps). The circuit breaker halts all trading
+  # for the session once realized P&L falls below -daily_loss_limit_quote.
+  max_trade_quote: 100
+  max_exposure_quote: 500
+  daily_loss_limit_quote: 50
+  min_act_spread_bps: 5.0
+
+  # Live/testnet order style: LIMIT IOC at walked VWAP padded by price_buffer_bps
+  # for price protection; market_orders: true allows naked market orders.
+  market_orders: false
+  price_buffer_bps: 5.0
