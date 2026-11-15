@@ -1,5 +1,7 @@
 # cex-orderbook-arbitrage
 
+[![CI](https://github.com/RafCEO/cex-orderbook-arbitrage/actions/workflows/ci.yml/badge.svg)](https://github.com/RafCEO/cex-orderbook-arbitrage/actions/workflows/ci.yml)
+
 Cross-exchange crypto spread monitor and orderbook depth analyzer. Polls public
 REST orderbooks from Binance, Kraken and Bybit, walks real depth to compute
 volume-weighted fill prices, and evaluates cross-exchange and triangular routes
@@ -179,15 +181,30 @@ each triplet is evaluated on every exchange that lists all three pairs.
 
 ```
 pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest --cov --cov-report=term
 ```
 
-The suite is fully hermetic: hand-crafted orderbooks, no network and no event
-loop. It covers exact VWAP across multiple levels, slippage vs top-of-book,
-partial fills on shallow books, hand-computed net spread after two taker fees
-(1e-9 tolerance), profitable vs fee-dominated routes, spike-filter outlier
-suppression and confirmation, the snapshot staleness guard, and Kraken
-XBT/BTC symbol normalization in both directions.
+The suite is fully hermetic: hand-crafted orderbooks, scripted aiohttp
+sessions, frozen clocks and a temporary SQLite database. No network access.
+It covers model sanitization and derived metrics, connector payload parsing
+and symbol mapping (including Kraken XBT/XXBTZ normalization), retry backoff
+and the token-bucket rate limiter, detector pairing and spike-filter
+confirmation logic, persistence batching and CSV export, and the dashboard
+formatting helpers. Runtime is well under a second; the coverage gate is 85%.
+
+## Code quality and tooling
+
+Configuration lives in `pyproject.toml`:
+
+- `ruff check .` — lint (E, F, W, I, UP, B, SIM rule families)
+- `ruff format --check .` — formatting
+- `mypy core connectors engine storage cli main.py tests` — strict typing
+  (`disallow_untyped_defs`, `no_implicit_optional`, `warn_return_any`)
+- `pytest --cov` — coverage gate at 85% over core, connectors, engine,
+  storage and cli
+
+CI ([ci.yml](.github/workflows/ci.yml)) runs all four on Python 3.11, 3.12
+and 3.13 for every push and pull request to `main`.
 
 ## Docker
 
