@@ -1,4 +1,5 @@
 """Rich live terminal dashboard for spread monitoring."""
+
 from __future__ import annotations
 
 import time
@@ -15,7 +16,7 @@ from core.models import ArbitrageOpportunity, OrderBookSnapshot
 
 
 def fmt_quote(v: float) -> str:
-    for unit, div in (("K", 1e3), ("M", 1e6)):
+    for unit, div in (("M", 1e6), ("K", 1e3)):
         if abs(v) >= div:
             return f"{v / div:.1f}{unit}"
     return f"{v:.0f}"
@@ -112,13 +113,16 @@ class Dashboard:
                 if opp.route.value == "cross_exchange"
                 else f"tri {opp.buy_exchange}"
             )
-            cells = [Text(x, style=style) for x in (
-                opp.pair,
-                route,
-                f"{float(opp.gross_spread_bps):+.1f}",
-                f"{float(opp.fees_bps):.1f}",
-                f"{float(opp.slippage_bps):+.1f}",
-            )]
+            cells = [
+                Text(x, style=style)
+                for x in (
+                    opp.pair,
+                    route,
+                    f"{float(opp.gross_spread_bps):+.1f}",
+                    f"{float(opp.fees_bps):.1f}",
+                    f"{float(opp.slippage_bps):+.1f}",
+                )
+            ]
             table.add_row(
                 *cells,
                 net_cell,
@@ -129,9 +133,7 @@ class Dashboard:
                 ),
             )
         if not self._last_opps:
-            table.add_row(
-                Text("no routes evaluated yet", style="dim"), *[""] * 8
-            )
+            table.add_row(Text("no routes evaluated yet", style="dim"), *[""] * 8)
         return table
 
     def _status_lines(self) -> list[RenderableType]:
