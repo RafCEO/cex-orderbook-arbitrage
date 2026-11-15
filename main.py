@@ -304,9 +304,35 @@ async def execute_opportunities(
         report = await executor.execute(intent)
         reports.append(report)
         if report.status.value != "rejected":
+            if not report.simulated:
+                mirror_live_fill(portfolio, report)
             risk.record_pnl(report.realized_pnl_quote)
             trade_logger.record(report)
     return reports
+
+
+def mirror_live_fill(portfolio: Portfolio, report: ExecutionReport) -> None:
+    """Book a live/testnet fill into the portfolio for unified position reporting."""
+    buy = report.buy_fill
+    sell = report.sell_fill
+    intent = report.intent
+    if buy is not None and buy.base_amount > 0:
+        portfolio.apply_buy(
+            exchange=intent.buy_exchange,
+            base_asset=intent.base_asset,
+            base_amount=buy.base_amount,
+            filled_quote=buy.filled_quote,
+            fee_quote=buy.fee_quote,
+        )
+        portfolio.transfer(intent.buy_exchange, intent.sell_exchange, intent.base_asset)
+    if sell is not None and sell.base_amount > 0:
+        portfolio.apply_sell(
+            exchange=intent.sell_exchange,
+            base_asset=intent.base_asset,
+            base_amount=sell.base_amount,
+            filled_quote=sell.filled_quote,
+            fee_quote=sell.fee_quote,
+        )
 
 
 async def fetch_all(
