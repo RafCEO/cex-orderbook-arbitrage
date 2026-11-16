@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS opportunities (
     buy_latency_ms REAL NOT NULL,
     sell_latency_ms REAL NOT NULL,
     suppressed INTEGER NOT NULL DEFAULT 0,
+    fx_rate REAL NOT NULL DEFAULT 0,
+    fx_quote TEXT NOT NULL DEFAULT '',
     session_id TEXT NOT NULL DEFAULT ''
 );
 """
@@ -41,8 +43,8 @@ INSERT_SQL = (
     "INSERT INTO opportunities "
     "(detected_at, route, pair, buy_exchange, sell_exchange, volume_quote, "
     "gross_spread_bps, slippage_bps, fees_bps, net_spread_bps, net_delta_quote, "
-    "fill_ratio, buy_latency_ms, sell_latency_ms, suppressed, session_id) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "fill_ratio, buy_latency_ms, sell_latency_ms, suppressed, fx_rate, fx_quote, session_id) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -75,6 +77,15 @@ class OpportunityLogger:
         with contextlib.suppress(sqlite3.OperationalError):
             await self._db.execute(
                 "ALTER TABLE opportunities ADD COLUMN session_id TEXT NOT NULL DEFAULT ''"
+            )
+        # migrate pre-fx dbs; duplicate-column errors are expected.
+        with contextlib.suppress(sqlite3.OperationalError):
+            await self._db.execute(
+                "ALTER TABLE opportunities ADD COLUMN fx_rate REAL NOT NULL DEFAULT 0"
+            )
+        with contextlib.suppress(sqlite3.OperationalError):
+            await self._db.execute(
+                "ALTER TABLE opportunities ADD COLUMN fx_quote TEXT NOT NULL DEFAULT ''"
             )
         await self._db.commit()
         self._running = True
@@ -136,6 +147,8 @@ class OpportunityLogger:
                 float(opp.buy_latency_ms),
                 float(opp.sell_latency_ms),
                 int(opp.suppressed),
+                opp.fx_rate,
+                opp.fx_quote,
                 self.session_id,
             )
             for opp in batch

@@ -149,7 +149,7 @@ def test_insert_sql_columns_align_with_schema() -> None:
     ]
     insert_cols = INSERT_SQL.split("(")[1].split(")")[0].replace(" ", "").split(",")
     assert insert_cols == columns
-    assert len(insert_cols) == 16
+    assert len(insert_cols) == 18
 
 
 async def test_stats_and_export_exclude_previous_sessions(db_path: str, tmp_path: Path) -> None:
