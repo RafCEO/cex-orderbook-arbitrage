@@ -263,28 +263,6 @@ and CSV exports cover only the current run, so prior runs in the same database
 file never bleed into a session's numbers. With `--export`, trades go to
 `trades_<name>.csv` next to the opportunities CSV.
 
-## Risk disclaimer (read before live mode)
-
-This software touches real-money pathways when run with `--mode live`.
-Be honest with yourself about what it can and cannot do:
-
-- **Expect to lose money in live mode at this data granularity.** The bot
-  polls REST endpoints on a timer. Between two polls the market moves; the
-  spreads it acts on are already stale by hundreds of milliseconds to
-  seconds. Professional arbitrage operates on websocket L2 data with
-  colocation. Net spreads after fees on polled data are typically negative.
-- **Paper fills are simulated and labeled as such.** They walk real books but
-  assume no queue position, no latency between legs, no partial adhesion and
-  a free instant transfer between exchanges. Real execution will be worse.
-- **Capital risk is yours.** Testnets behave differently from production
-  (liquidity, matching, rate limits). Even with the risk guard, losses are
-  bounded per-trade and per-day only to the extent the configuration is
-  sound and the process stays alive.
-- Credentials are env-only, never logged, never persisted. Losing control of
-  an environment variable is equivalent to losing the funds; use exchange
-  key restrictions (IP allowlists, no withdrawal permission).
-
-This is not financial advice.
 
 ## Testing
 
