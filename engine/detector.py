@@ -18,7 +18,7 @@ from core.models import (
     FeeSchedule,
     OrderBookSnapshot,
 )
-from engine.fx import ImpliedFxCross, quote_of
+from engine.fx import COMMON_QUOTE, ImpliedFxCross, quote_of
 from engine.vwap_calculator import (
     evaluate_cross_exchange,
     evaluate_cross_quote,
@@ -113,10 +113,13 @@ class SpreadDetector:
         buy_fee = fees.get(buy.exchange, FeeSchedule())
         sell_fee = fees.get(sell.exchange, FeeSchedule())
         if buy_quote == sell_quote:
+            if buy.exchange == sell.exchange:
+                return None
             return evaluate_cross_exchange(buy, sell, volume_quote, buy_fee, sell_fee)
-        if self.fx is None:
+        if self.fx is None or buy.exchange == sell.exchange:
             return None
-        cross = f"{buy_quote}/{sell_quote}"
+        foreign = buy_quote if buy_quote != COMMON_QUOTE else sell_quote
+        cross = f"{COMMON_QUOTE}/{foreign}"
         if not self.fx.usable(cross):
             return None
         return evaluate_cross_quote(

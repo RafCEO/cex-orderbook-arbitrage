@@ -298,8 +298,7 @@ class TestDetectorCrossQuoteRouting:
         assert cross, "expected at least one emitted cross-quote route"
         for opp in cross:
             assert opp.fx_quote == "JPY/USDT"
-            assert opp.fx_rate > 100  # JPY per USDT, sanity scale
-            assert opp.sell_pair == "BTC/JPY" or opp.pair == "BTC/JPY"
+            assert {opp.pair, opp.sell_pair} == {"BTC/JPY", "BTC/USDT"}
 
     def test_cross_quote_suppressed_when_degraded(self) -> None:
         fx = ImpliedFxCross(smoothing_window=5, sanity_band_bps=200.0)

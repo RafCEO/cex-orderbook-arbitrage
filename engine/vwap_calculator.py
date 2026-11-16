@@ -214,9 +214,8 @@ def evaluate_cross_quote(
     if opp is None:
         return None
     foreign_quote = sell_quote if buy_quote == COMMON_QUOTE else buy_quote
-    display_rate = fx_rate if buy_quote != COMMON_QUOTE else Decimal(1) / fx_rate
     opp.sell_pair = sell_snap.pair
-    opp.fx_rate = float(display_rate)
+    opp.fx_rate = float(Decimal(1) / fx_rate)
     opp.fx_quote = f"{foreign_quote}/{COMMON_QUOTE}"
     return opp
 
