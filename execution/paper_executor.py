@@ -72,17 +72,21 @@ class PaperExecutor(BaseExecutor):
         fee_buy = self.fees.get(intent.buy_exchange, FeeSchedule())
         fee_sell = self.fees.get(intent.sell_exchange, FeeSchedule())
 
+        budget = self._native_budget(intent)
+        if budget is None:
+            return self._reject(intent, "no usable FX rate for cross-quote budget")
+
         available = self.portfolio.quote_balance(intent.buy_exchange)
         fee_rate = fee_buy.taker_bps / BPS
-        required = intent.budget_quote * (Decimal(1) + fee_rate)
+        required = budget * (Decimal(1) + fee_rate)
         if available < required:
             return self._reject(
                 intent,
-                f"insufficient {intent.quote_asset} on {intent.buy_exchange}: "
-                f"have {available}, need {required}",
+                f"insufficient {self.portfolio.quote_asset(intent.buy_exchange)} "
+                f"on {intent.buy_exchange}: have {available}, need {required}",
             )
 
-        buy_fill = walk_depth(buy_snap.asks, intent.budget_quote)
+        buy_fill = walk_depth(buy_snap.asks, budget)
         if buy_fill.base_filled <= 0 or buy_fill.vwap_price is None:
             return self._reject(intent, "empty buy book")
         buy_fee = taker_fee(fee_buy, buy_fill.filled_quote)
@@ -146,6 +150,18 @@ class PaperExecutor(BaseExecutor):
         )
         self.reports.append(report)
         return report
+
+    def _native_budget(self, intent: OrderIntent) -> Decimal | None:
+        """Buy-leg budget in the buy exchange's own quote currency.
+
+        Same-quote routes spend intent.budget_quote directly. Cross-quote
+        routes convert the common-quote budget through the live implied rate.
+        """
+        asset = self.portfolio.quote_asset(intent.buy_exchange)
+        if asset == self.portfolio.common_quote or self.fx is None:
+            return intent.budget_quote
+        rate = self.fx.rate(f"{asset}/{self.portfolio.common_quote}")
+        return None if rate is None else intent.budget_quote * rate
 
     def _fx_rates_for(self, intent: OrderIntent) -> dict[str, Decimal]:
         """Common-quote units per quote asset, derived from the executor's FX cross."""
