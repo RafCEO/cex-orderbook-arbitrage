@@ -44,13 +44,45 @@ detection pipeline.
                      |   rolling-median spike filter|
                      +---------------+---------------+
                                      |
-                                     v
-                        +--------------------------+
-                        |      cli/dashboard.py    |
-                        |  rich Live table, status |
-                        |  lines, latency coloring |
-                        +--------------------------+
+                     +---------------+----------------+
+                     v                                v
+        +--------------------------+    +---------------------------+
+        |      cli/dashboard.py    |    |        execution/         |
+        | rich Live table, status  |    | risk.py pre-trade gate +  |
+        | lines, latency coloring; |    | daily-loss breaker, then  |
+        | trading panel and fills  |    | paper or live executor,   |
+        | feed when trading        |    | portfolio + trades_logger |
+        +--------------------------+    +---------------------------+
 ```
+
+### Async runtime and per-tick data flow
+
+The process runs on a single asyncio event loop started by `asyncio.run` in
+`main.py`. One shared `aiohttp.ClientSession` (pooled TCP connector) serves
+every connector fetch and every signed executor request; it is closed once at
+shutdown. Each tick:
+
+1. **Fetch.** `asyncio.gather` launches one `fetch_orderbook` coroutine per
+   (exchange, pair) concurrently. Before each request a connector acquires a
+   token from its per-exchange token bucket (`rate_limit_per_sec`); transport
+   errors and HTTP >= 400 responses are retried with full-jitter exponential
+   backoff (0.5 s base, x2 per attempt, 30 s cap, 5 attempts, 10 s request
+   timeout). A failed fetch is logged and skipped; it never aborts the tick.
+2. **Detect.** Snapshots younger than `max_snapshot_age_ms` flow through
+   `core/models.py` into the pure engine: `vwap_calculator.py` walks depth,
+   and `detector.py` enumerates cross-exchange and triangular routes and
+   applies the rolling-median spike filter.
+3. **Execute (trading modes only).** Confirmed cross-exchange opportunities
+   pass the risk guard (per-trade cap, open-exposure cap, spread gate,
+   daily-loss circuit breaker) before the paper or live executor fills both
+   legs; fills update the portfolio and are recorded by the trades logger.
+   Triangular routes are monitor-only.
+4. **Persist.** Opportunities and trade reports are enqueued on an async
+   queue; a background drainer task batches INSERTs into SQLite (WAL mode),
+   so persistence never blocks the poll loop.
+5. **Render.** The rich `Live` display refreshes: spread table and exchange
+   status lines in all modes, plus the positions/P&L panel and fills feed
+   when trading. The loop then sleeps `interval - elapsed`.
 
 ## Module map
 
@@ -150,7 +182,7 @@ read-only.
 | `--pairs` | `BTC/USDT,ETH/USDT` | Comma-separated canonical pairs |
 | `--volume` | config `default_volume_quote` | Trade size in quote currency used for depth walks |
 | `--min-spread` | config `min_spread_bps` | Minimum net spread (bps) for a highlighted route |
-| `--export PATH.csv` | off | Dump the session table to CSV at exit |
+| `--export PATH.csv` | off | Dump this run's rows to CSV at exit |
 | `--interval` | config `poll_interval` | Seconds between polling ticks |
 | `--duration` | `0` | Stop after N seconds; 0 runs until Ctrl+C |
 | `--config` | `config.yaml` | Config file path |
@@ -225,9 +257,11 @@ trading:
   price_buffer_bps: 5.0
 ```
 
-Executed trades persist to a `trades` table in the same SQLite database and
-export alongside opportunities (`trades_<name>.csv` next to the opportunities
-CSV).
+Executed trades persist to a `trades` table in the same SQLite database.
+Every row is stamped with a run-scoped `session_id`; the summary panel, stats
+and CSV exports cover only the current run, so prior runs in the same database
+file never bleed into a session's numbers. With `--export`, trades go to
+`trades_<name>.csv` next to the opportunities CSV.
 
 ## Risk disclaimer (read before live mode)
 
@@ -264,8 +298,11 @@ sessions, frozen clocks and a temporary SQLite database. No network access.
 It covers model sanitization and derived metrics, connector payload parsing
 and symbol mapping (including Kraken XBT/XXBTZ normalization), retry backoff
 and the token-bucket rate limiter, detector pairing and spike-filter
-confirmation logic, persistence batching and CSV export, and the dashboard
-formatting helpers. Runtime is well under a second; the coverage gate is 85%.
+confirmation logic, persistence batching, session-scoped stats and CSV
+export, dashboard formatting helpers, signing for all three exchanges,
+paper fills, live executor order construction and rejection paths, portfolio
+math and the risk guard. Runtime is well under a second; the coverage gate
+is 85%.
 
 ## Code quality and tooling
 
@@ -273,10 +310,10 @@ Configuration lives in `pyproject.toml`:
 
 - `ruff check .` — lint (E, F, W, I, UP, B, SIM rule families)
 - `ruff format --check .` — formatting
-- `mypy core connectors engine storage cli main.py tests` — strict typing
-  (`disallow_untyped_defs`, `no_implicit_optional`, `warn_return_any`)
+- `mypy core connectors engine storage cli execution main.py tests` — strict
+  typing (`disallow_untyped_defs`, `no_implicit_optional`, `warn_return_any`)
 - `pytest --cov` — coverage gate at 85% over core, connectors, engine,
-  storage and cli
+  storage, cli and execution
 
 CI ([ci.yml](.github/workflows/ci.yml)) runs all four on Python 3.11, 3.12
 and 3.13 for every push and pull request to `main`.
@@ -302,8 +339,6 @@ the container filesystem; mount a volume over `/app/data` to persist it.
 - Fee schedules are static assumptions; real fills face variable tiers,
   rebates, withdrawal constraints, transfer latency and counterparty risk that
   this tool does not model.
-- Paper fills walk live books but simulate free instant transfers between
-  exchanges and no queue position; they are optimistic by construction.
 - Kraken order execution is intentionally unsupported.
 - This software is not trading or financial advice. Market data may be delayed,
   inaccurate or unavailable; use at your own risk and never risk capital you
