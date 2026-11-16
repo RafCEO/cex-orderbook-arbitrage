@@ -53,6 +53,11 @@ class BaseConnector(abc.ABC):
 
     exchange_name: str = "base"
     default_rate_limit: float = 5.0
+    quotes: tuple[str, ...] = ()
+
+    def supports_quote(self, quote: str) -> bool:
+        """True when the exchange lists the quote currency; empty tuple means unfiltered."""
+        return not self.quotes or quote in self.quotes
 
     def __init__(
         self,
