@@ -150,6 +150,9 @@ class ArbitrageOpportunity(BaseModel):
     sell_latency_ms: float
     detected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     suppressed: bool = False
+    sell_pair: str = ""
+    fx_rate: float = 0.0
+    fx_quote: str = ""
 
     @property
     def is_profitable(self) -> bool:

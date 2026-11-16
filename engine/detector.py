@@ -18,7 +18,12 @@ from core.models import (
     FeeSchedule,
     OrderBookSnapshot,
 )
-from engine.vwap_calculator import evaluate_cross_exchange, evaluate_triangular
+from engine.fx import ImpliedFxCross, quote_of
+from engine.vwap_calculator import (
+    evaluate_cross_exchange,
+    evaluate_cross_quote,
+    evaluate_triangular,
+)
 
 DEFAULT_MAX_AGE_MS: float = 5000.0
 DEFAULT_SPIKE_WINDOW: int = 20
@@ -81,6 +86,7 @@ class SpreadDetector:
         spike_window: int = DEFAULT_SPIKE_WINDOW,
         spike_deviation_bps: float = DEFAULT_SPIKE_DEVIATION_BPS,
         confirmations: int = DEFAULT_CONFIRMATIONS,
+        fx: ImpliedFxCross | None = None,
     ) -> None:
         self.min_spread_bps = Decimal(str(min_spread_bps))
         self.max_snapshot_age_ms = max_snapshot_age_ms
@@ -88,10 +94,40 @@ class SpreadDetector:
         self.spike_window = spike_window
         self.spike_deviation_bps = spike_deviation_bps
         self.confirmations = confirmations
+        self.fx = fx
         self._filters: dict[tuple[str, str, str, str], SpikeFilterState] = {}
 
     def _fresh(self, snap: OrderBookSnapshot) -> bool:
         return snap.age_ms <= self.max_snapshot_age_ms
+
+    def _evaluate_route(
+        self,
+        buy: OrderBookSnapshot,
+        sell: OrderBookSnapshot,
+        volume_quote: Decimal,
+        fees: dict[str, FeeSchedule],
+    ) -> ArbitrageOpportunity | None:
+        """Evaluate one route; cross-quote legs are normalized through the FX cross."""
+        buy_quote = quote_of(buy.pair)
+        sell_quote = quote_of(sell.pair)
+        buy_fee = fees.get(buy.exchange, FeeSchedule())
+        sell_fee = fees.get(sell.exchange, FeeSchedule())
+        if buy_quote == sell_quote:
+            return evaluate_cross_exchange(buy, sell, volume_quote, buy_fee, sell_fee)
+        if self.fx is None:
+            return None
+        cross = f"{buy_quote}/{sell_quote}"
+        if not self.fx.usable(cross):
+            return None
+        return evaluate_cross_quote(
+            buy,
+            sell,
+            volume_quote,
+            buy_fee,
+            sell_fee,
+            self.fx.rate(cross) or Decimal(0),
+            self.fx.conversion_haircut_bps,
+        )
 
     def _route_filter(self, key: tuple[str, str, str, str]) -> SpikeFilterState:
         if key not in self._filters:
@@ -114,27 +150,22 @@ class SpreadDetector:
         out: list[ArbitrageOpportunity] = []
         fresh = {k: s for k, s in snapshots.items() if self._fresh(s)}
 
-        by_pair: dict[str, list[OrderBookSnapshot]] = {}
+        by_base: dict[str, list[OrderBookSnapshot]] = {}
         for (_exchange, pair), snap in fresh.items():
-            by_pair.setdefault(pair, []).append(snap)
+            base = pair.split("/")[0]
+            by_base.setdefault(base, []).append(snap)
 
-        for pair, snaps in by_pair.items():
+        for _base, snaps in by_base.items():
             if len(snaps) < 2:
                 continue
             for i, buy in enumerate(snaps):
                 for j, sell in enumerate(snaps):
                     if i == j:
                         continue
-                    opp = evaluate_cross_exchange(
-                        buy,
-                        sell,
-                        volume_quote,
-                        fees.get(buy.exchange, FeeSchedule()),
-                        fees.get(sell.exchange, FeeSchedule()),
-                    )
+                    opp = self._evaluate_route(buy, sell, volume_quote, fees)
                     if opp is None:
                         continue
-                    key = (pair, opp.buy_exchange, opp.sell_exchange, "cross")
+                    key = (buy.pair, opp.buy_exchange, opp.sell_exchange, "cross")
                     emitted = self._route_filter(key).accept(opp.net_spread_bps)
                     if emitted:
                         out.append(opp)

@@ -20,8 +20,22 @@ from core.models import (
     OrderBookSnapshot,
     RouteType,
 )
+from engine.fx import COMMON_QUOTE, quote_of
 
 BPS = Decimal(10_000)
+
+
+def rebase_snapshot(snap: OrderBookSnapshot, factor: Decimal) -> OrderBookSnapshot:
+    """Copy a snapshot with every price scaled by factor; amounts (base) unchanged."""
+    return OrderBookSnapshot(
+        exchange=snap.exchange,
+        pair=snap.pair,
+        bids=[OrderBookLevel(price=lv.price * factor, amount=lv.amount) for lv in snap.bids],
+        asks=[OrderBookLevel(price=lv.price * factor, amount=lv.amount) for lv in snap.asks],
+        exchange_ts=snap.exchange_ts,
+        received_at=snap.received_at,
+        liquidity_depth=snap.liquidity_depth,
+    )
 
 
 def walk_depth(levels: list[OrderBookLevel], target_quote: Decimal) -> FillResult:
@@ -157,6 +171,54 @@ def evaluate_cross_exchange(
         buy_latency_ms=buy_snap.latency_ms,
         sell_latency_ms=sell_snap.latency_ms,
     )
+
+
+def evaluate_cross_quote(
+    buy_snap: OrderBookSnapshot,
+    sell_snap: OrderBookSnapshot,
+    volume_quote: Decimal,
+    buy_fee: FeeSchedule,
+    sell_fee: FeeSchedule,
+    fx_rate: Decimal,
+    haircut_bps: Decimal,
+) -> ArbitrageOpportunity | None:
+    """Cross-quote variant: books denominate the same base in different quotes.
+
+    The foreign leg (the one not in the common quote) is rebased into the
+    common quote so all spread math lands in one currency and depth of both
+    legs is comparable. The conversion haircut is charged exactly once, on
+    the foreign leg's conversion, approximating stablecoin/fiat conversion
+    cost on top of the FX spread itself:
+
+        foreign sell: p_common = p * r * (1 - h/1e4)   (proceeds discounted)
+        foreign buy : p_common = p * r / (1 - h/1e4)   (cost grossed up)
+
+    where r = common units per foreign unit.
+    """
+    if fx_rate <= 0:
+        return None
+    haircut_mult = Decimal(1) - haircut_bps / BPS
+    if haircut_mult <= 0:
+        return None
+    buy_quote = quote_of(buy_snap.pair)
+    sell_quote = quote_of(sell_snap.pair)
+    if buy_quote != COMMON_QUOTE and sell_quote != COMMON_QUOTE:
+        return None
+    if buy_quote != COMMON_QUOTE:
+        norm_buy = rebase_snapshot(buy_snap, fx_rate / haircut_mult)
+        norm_sell = sell_snap
+    else:
+        norm_buy = buy_snap
+        norm_sell = rebase_snapshot(sell_snap, fx_rate * haircut_mult)
+    opp = evaluate_cross_exchange(norm_buy, norm_sell, volume_quote, buy_fee, sell_fee)
+    if opp is None:
+        return None
+    foreign_quote = sell_quote if buy_quote == COMMON_QUOTE else buy_quote
+    display_rate = fx_rate if buy_quote != COMMON_QUOTE else Decimal(1) / fx_rate
+    opp.sell_pair = sell_snap.pair
+    opp.fx_rate = float(display_rate)
+    opp.fx_quote = f"{foreign_quote}/{COMMON_QUOTE}"
+    return opp
 
 
 def evaluate_triangular(
