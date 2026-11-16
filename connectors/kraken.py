@@ -13,6 +13,7 @@ BASE_URL = "https://api.kraken.com/0/public/Depth"
 class KrakenConnector(BaseConnector):
     exchange_name = "kraken"
     default_rate_limit = 1.0
+    quotes = ("USDT", "USD", "EUR")
 
     @classmethod
     def to_exchange_symbol(cls, pair: str) -> str:

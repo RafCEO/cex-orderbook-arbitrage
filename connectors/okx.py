@@ -13,6 +13,7 @@ BASE_URL = "https://www.okx.com/api/v5/market/books"
 class OkxConnector(BaseConnector):
     exchange_name = "okx"
     default_rate_limit = 10.0
+    quotes = ("USDT",)
 
     @classmethod
     def to_exchange_symbol(cls, pair: str) -> str:

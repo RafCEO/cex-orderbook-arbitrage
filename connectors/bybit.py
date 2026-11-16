@@ -13,6 +13,7 @@ BASE_URL = "https://api.bybit.com/v5/market/orderbook"
 class BybitConnector(BaseConnector):
     exchange_name = "bybit"
     default_rate_limit = 5.0
+    quotes = ("USDT",)
 
     async def fetch_orderbook(self, pair: str) -> OrderBookSnapshot:
         symbol = self.to_exchange_symbol(pair)

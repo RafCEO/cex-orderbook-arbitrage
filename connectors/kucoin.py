@@ -17,6 +17,7 @@ BASE_URL = "https://api.kucoin.com/api/v1/market/orderbook/level2_100"
 class KucoinConnector(BaseConnector):
     exchange_name = "kucoin"
     default_rate_limit = 8.0
+    quotes = ("USDT",)
 
     @classmethod
     def to_exchange_symbol(cls, pair: str) -> str:

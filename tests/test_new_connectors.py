@@ -10,10 +10,13 @@ from typing import TypeVar
 import pytest
 
 from connectors.base import BaseConnector
+from connectors.binance import BinanceConnector
 from connectors.bitbank import BitbankConnector
 from connectors.bitflyer import BitflyerConnector
+from connectors.bybit import BybitConnector
 from connectors.coincheck import CoincheckConnector
 from connectors.gate import GateConnector
+from connectors.kraken import KrakenConnector
 from connectors.kucoin import KucoinConnector
 from connectors.okx import OkxConnector
 from tests.fakes import FakeAiohttpSession, FakeResponse, as_client_session
@@ -290,8 +293,17 @@ def test_jpy_connectors_only_support_jpy() -> None:
         assert not conn.supports_quote("USDT")
 
 
-def test_usdt_connectors_unfiltered() -> None:
-    for cls in (OkxConnector, KucoinConnector, GateConnector):
-        conn = cls(session=as_client_session(FakeAiohttpSession()))
+def test_usdt_connectors_filter_jpy() -> None:
+    session = as_client_session(FakeAiohttpSession())
+    for cls in (OkxConnector, KucoinConnector, GateConnector, BybitConnector):
+        conn = cls(session=session)
         assert conn.supports_quote("USDT")
-        assert conn.supports_quote("JPY")
+        assert not conn.supports_quote("JPY")
+
+
+def test_global_exchanges_are_usdt_only() -> None:
+    session = as_client_session(FakeAiohttpSession())
+    for cls in (BinanceConnector, KrakenConnector):
+        conn = cls(session=session)
+        assert conn.supports_quote("USDT")
+        assert not conn.supports_quote("JPY")

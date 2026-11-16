@@ -13,6 +13,7 @@ BASE_URL = "https://api.binance.com/api/v3/depth"
 class BinanceConnector(BaseConnector):
     exchange_name = "binance"
     default_rate_limit = 10.0
+    quotes = ("USDT",)
 
     async def fetch_orderbook(self, pair: str) -> OrderBookSnapshot:
         symbol = self.to_exchange_symbol(pair)

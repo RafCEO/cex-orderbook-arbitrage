@@ -13,6 +13,7 @@ BASE_URL = "https://api.gateio.ws/api/v4/spot/order_book"
 class GateConnector(BaseConnector):
     exchange_name = "gate"
     default_rate_limit = 8.0
+    quotes = ("USDT",)
 
     @classmethod
     def to_exchange_symbol(cls, pair: str) -> str:
