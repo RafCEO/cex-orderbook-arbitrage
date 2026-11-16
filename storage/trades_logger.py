@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS trades (
     fees_quote REAL NOT NULL,
     realized_pnl_quote REAL NOT NULL,
     status TEXT NOT NULL,
+    fx_rate REAL NOT NULL DEFAULT 0,
+    fx_quote TEXT NOT NULL DEFAULT '',
     session_id TEXT NOT NULL DEFAULT ''
 );
 """
@@ -43,8 +45,8 @@ TRADES_INSERT_SQL = (
     "INSERT INTO trades "
     "(executed_at, mode, simulated, route, pair, buy_exchange, sell_exchange, "
     "budget_quote, buy_base, buy_vwap, buy_fee, sell_base, sell_vwap, sell_fee, "
-    "fees_quote, realized_pnl_quote, status, session_id) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "fees_quote, realized_pnl_quote, status, fx_rate, fx_quote, session_id) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -70,6 +72,8 @@ def trade_row(report: ExecutionReport, session_id: str) -> tuple[Any, ...]:
         float(report.fees_quote),
         float(report.realized_pnl_quote),
         report.status.value,
+        report.intent.fx_rate,
+        report.intent.fx_quote,
         session_id,
     )
 
@@ -97,6 +101,13 @@ class TradeLogger:
         with contextlib.suppress(sqlite3.OperationalError):
             await self._db.execute(
                 "ALTER TABLE trades ADD COLUMN session_id TEXT NOT NULL DEFAULT ''"
+            )
+        # migrate pre-fx dbs; duplicate-column errors are expected.
+        with contextlib.suppress(sqlite3.OperationalError):
+            await self._db.execute("ALTER TABLE trades ADD COLUMN fx_rate REAL NOT NULL DEFAULT 0")
+        with contextlib.suppress(sqlite3.OperationalError):
+            await self._db.execute(
+                "ALTER TABLE trades ADD COLUMN fx_quote TEXT NOT NULL DEFAULT ''"
             )
         await self._db.commit()
         self._running = True

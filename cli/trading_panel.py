@@ -53,6 +53,7 @@ class TradingPanel:
         self.recent_fills: list[ExecutionReport] = []
         self.quote_asset = "USDT"
         self.mids: dict[tuple[str, str], Decimal] = {}
+        self.fx_rates: dict[str, Decimal] = {}
 
     def update(
         self,
@@ -62,12 +63,14 @@ class TradingPanel:
         halted: bool,
         halt_reason: str | None,
         mids: dict[tuple[str, str], Decimal],
+        fx_rates: dict[str, Decimal] | None = None,
     ) -> None:
         self.mode = mode
         self.portfolio = portfolio
         self.halted = halted
         self.halt_reason = halt_reason
         self.mids = mids
+        self.fx_rates = fx_rates or {}
         executed = [r for r in reports if r.status.value != "rejected"]
         self.recent_fills = (self.recent_fills + executed)[-self.MAX_FILLS :]
 
@@ -83,21 +86,22 @@ class TradingPanel:
     def _balances_table(self) -> Table:
         table = Table(box=None, expand=True, show_header=True, padding=(0, 1))
         table.add_column("exchange", no_wrap=True)
-        table.add_column(self.quote_asset.lower(), justify="right", no_wrap=True)
+        table.add_column("quote", justify="right", no_wrap=True)
         table.add_column("open inventory", justify="right", no_wrap=True)
         p = self.portfolio
         if p is None:
             table.add_row(Text("trading inactive", style="dim"), "", "")
             return table
-        exchanges = sorted(p.quote.keys())
-        for exchange in exchanges:
+        for exchange in sorted(p.quote.keys()):
             inventory = sum(
                 (pos.base_amount for (ex, _base), pos in p.inventory.items() if ex == exchange),
                 Decimal(0),
             )
             table.add_row(
                 Text(exchange, style="bold"),
-                Text(fmt_amount(p.quote_balance(exchange))),
+                Text(
+                    f"{fmt_amount(p.quote_balance(exchange))} {p.quote_asset(exchange)}",
+                ),
                 Text(fmt_amount(inventory), style="cyan" if inventory > 0 else "dim"),
             )
         return table
@@ -110,10 +114,10 @@ class TradingPanel:
         if p is None:
             table.add_row(Text("trading inactive", style="dim"), Text(""))
             return table
-        inventory_value = p.open_inventory_value(self.mids)
+        inventory_value = p.open_inventory_value(self.mids, self.fx_rates)
         inventory_cost = p.open_inventory_cost()
         unrealized = inventory_value - inventory_cost if p.inventory else Decimal(0)
-        equity = p.equity(self.mids)
+        equity = p.equity(self.mids, self.fx_rates)
         trades = p.wins + p.losses
         win_rate = (p.wins / trades * 100) if trades else 0.0
         rows = [

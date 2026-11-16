@@ -58,6 +58,9 @@ class OrderIntent(BaseModel):
     expected_buy_vwap: Decimal
     expected_sell_vwap: Decimal
     expected_net_spread_bps: Decimal
+    sell_pair: str = ""
+    fx_rate: float = 0.0
+    fx_quote: str = ""
     detected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -113,17 +116,30 @@ def build_intent(
         expected_buy_vwap=buy_walk.vwap_price,
         expected_sell_vwap=sell_walk.vwap_price,
         expected_net_spread_bps=opp.net_spread_bps,
+        sell_pair=opp.sell_pair,
+        fx_rate=opp.fx_rate,
+        fx_quote=opp.fx_quote,
         detected_at=opp.detected_at,
     )
 
 
-def pnl_from_legs(buy: LegFill, sell: LegFill | None) -> Decimal:
-    """Matched-portion realized P&L; both legs' rates are fee-inclusive."""
+def pnl_from_legs(
+    buy: LegFill,
+    sell: LegFill | None,
+    buy_rate: Decimal = Decimal(1),
+    sell_rate: Decimal = Decimal(1),
+) -> Decimal:
+    """Matched-portion realized P&L in the common quote.
+
+    Both legs' rates are fee-inclusive; buy_rate/sell_rate convert a leg
+    denominated in a foreign quote into the common quote (defaults to 1).
+    """
     if sell is None or sell.base_amount <= 0 or buy.base_amount <= 0:
         return Decimal(0)
-    buy_net_rate = (buy.filled_quote + buy.fee_quote) / buy.base_amount
-    sell_net_rate = (sell.filled_quote - sell.fee_quote) / sell.base_amount
-    return min(buy.base_amount, sell.base_amount) * (sell_net_rate - buy_net_rate)
+    buy_net_rate = (buy.filled_quote + buy.fee_quote) * buy_rate / buy.base_amount
+    sell_net_rate = (sell.filled_quote - sell.fee_quote) * sell_rate / sell.base_amount
+    matched = min(buy.base_amount, sell.base_amount)
+    return matched * (sell_net_rate - buy_net_rate)
 
 
 class BaseExecutor(abc.ABC):

@@ -21,10 +21,17 @@ from cli.dashboard import Dashboard
 from cli.trading_panel import TradingPanel
 from connectors.base import BaseConnector, ConnectorError
 from connectors.binance import BinanceConnector
+from connectors.bitbank import BitbankConnector
+from connectors.bitflyer import BitflyerConnector
 from connectors.bybit import BybitConnector
+from connectors.coincheck import CoincheckConnector
+from connectors.gate import GateConnector
 from connectors.kraken import KrakenConnector
+from connectors.kucoin import KucoinConnector
+from connectors.okx import OkxConnector
 from core.models import ArbitrageOpportunity, FeeSchedule, OrderBookSnapshot, RouteType
 from engine.detector import SpreadDetector
+from engine.fx import COMMON_QUOTE, ImpliedFxCross, quote_of
 from execution.base import BaseExecutor, ExecutionReport, build_intent
 from execution.live_executor import LiveExecutor, load_credentials
 from execution.paper_executor import PaperExecutor
@@ -61,6 +68,49 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
             "taker_fee_bps": 10.0,
             "rate_limit_per_sec": 5.0,
         },
+        "okx": {
+            "enabled": True,
+            "maker_fee_bps": 8.0,
+            "taker_fee_bps": 10.0,
+            "rate_limit_per_sec": 10.0,
+        },
+        "kucoin": {
+            "enabled": True,
+            "maker_fee_bps": 10.0,
+            "taker_fee_bps": 10.0,
+            "rate_limit_per_sec": 8.0,
+        },
+        "gate": {
+            "enabled": True,
+            "maker_fee_bps": 16.0,
+            "taker_fee_bps": 20.0,
+            "rate_limit_per_sec": 8.0,
+        },
+        "bitflyer": {
+            "enabled": True,
+            "maker_fee_bps": 12.0,
+            "taker_fee_bps": 12.0,
+            "rate_limit_per_sec": 1.5,
+        },
+        "bitbank": {
+            "enabled": True,
+            "maker_fee_bps": 12.0,
+            "taker_fee_bps": 12.0,
+            "rate_limit_per_sec": 5.0,
+        },
+        "coincheck": {
+            "enabled": True,
+            "maker_fee_bps": 15.0,
+            "taker_fee_bps": 25.0,
+            "rate_limit_per_sec": 1.5,
+        },
+    },
+    "fx": {
+        "reference_base": "BTC",
+        "smoothing_window": 5,
+        "sanity_band_bps": 200.0,
+        "conversion_haircut_bps": 25.0,
+        "max_age_ms": 5000.0,
     },
     "trading": {
         "mode": "monitor",
@@ -81,6 +131,12 @@ CONNECTOR_CLASSES: dict[str, type[BaseConnector]] = {
     "binance": BinanceConnector,
     "kraken": KrakenConnector,
     "bybit": BybitConnector,
+    "okx": OkxConnector,
+    "kucoin": KucoinConnector,
+    "gate": GateConnector,
+    "bitflyer": BitflyerConnector,
+    "bitbank": BitbankConnector,
+    "coincheck": CoincheckConnector,
 }
 
 console = Console()
@@ -227,10 +283,26 @@ def pair_assets(pair: str) -> tuple[str, str]:
     return base, quote
 
 
-def starting_portfolio(cfg: dict[str, Any], exchanges: list[str]) -> Portfolio:
+def quote_assets_for(pairs: list[str], exchanges: list[str]) -> dict[str, str]:
+    """Per-exchange quote asset inferred from the first enabled pair it serves."""
+    connector_quotes = {name: CONNECTOR_CLASSES[name].quotes for name in exchanges}
+    assets: dict[str, str] = {}
+    for name in exchanges:
+        quotes = connector_quotes.get(name) or ()
+        if len(quotes) == 1:
+            assets[name] = quotes[0]
+        else:
+            served = [quote_of(p) for p in pairs if not quotes or quote_of(p) in quotes]
+            assets[name] = served[0] if served else COMMON_QUOTE
+    return assets
+
+
+def starting_portfolio(
+    cfg: dict[str, Any], exchanges: list[str], pairs: list[str] | None = None
+) -> Portfolio:
     balances = cfg.get("trading", {}).get("starting_balances", {})
     starting = {name: Decimal(str(balances.get(name, 1000))) for name in exchanges}
-    return Portfolio(starting_quote=starting)
+    return Portfolio(starting_quote=starting, quote_assets=quote_assets_for(pairs or [], exchanges))
 
 
 def build_executor(
@@ -240,11 +312,12 @@ def build_executor(
     portfolio: Portfolio,
     fees: dict[str, FeeSchedule],
     exchanges: list[str],
+    fx: ImpliedFxCross | None = None,
 ) -> tuple[BaseExecutor | None, dict[str, str]]:
     """Build the executor for the mode; warnings returned for degraded setups."""
     warnings: dict[str, str] = {}
     if mode == "paper":
-        return PaperExecutor(portfolio=portfolio, fees=fees), warnings
+        return PaperExecutor(portfolio=portfolio, fees=fees, fx=fx), warnings
     if mode in ("testnet", "live"):
         creds = load_credentials(mode)
         tcfg = cfg.get("trading", {})
@@ -292,7 +365,7 @@ async def execute_opportunities(
         except ValueError:
             continue
         buy_snap = snaps.get((opp.buy_exchange, opp.pair))
-        sell_snap = snaps.get((opp.sell_exchange, opp.pair))
+        sell_snap = snaps.get((opp.sell_exchange, opp.sell_pair or opp.pair))
         if buy_snap is None or sell_snap is None:
             continue
         intent = build_intent(opp, buy_snap, sell_snap, base_asset, quote_asset)
@@ -340,22 +413,24 @@ async def fetch_all(
     pairs: list[str],
 ) -> dict[tuple[str, str], OrderBookSnapshot]:
     snaps: dict[tuple[str, str], OrderBookSnapshot] = {}
+    requests = [
+        (connector, pair)
+        for connector in connectors.values()
+        for pair in pairs
+        if connector.supports_quote(pair.split("/")[1])
+    ]
     results = await asyncio.gather(
-        *(c.fetch_orderbook(pair) for c in connectors.values() for pair in pairs),
+        *(c.fetch_orderbook(pair) for c, pair in requests),
         return_exceptions=True,
     )
-    idx = 0
-    for connector in connectors.values():
-        for pair in pairs:
-            result = results[idx]
-            idx += 1
-            if isinstance(result, BaseException):
-                if not isinstance(result, ConnectorError):
-                    connector.consecutive_failures += 1
-                connector.last_error = str(result)
-                log.warning("fetch failed %s %s: %s", connector.exchange_name, pair, result)
-            else:
-                snaps[(connector.exchange_name, pair)] = result
+    for (connector, pair), result in zip(requests, results, strict=False):
+        if isinstance(result, BaseException):
+            if not isinstance(result, ConnectorError):
+                connector.consecutive_failures += 1
+            connector.last_error = str(result)
+            log.warning("fetch failed %s %s: %s", connector.exchange_name, pair, result)
+        else:
+            snaps[(connector.exchange_name, pair)] = result
     return snaps
 
 
@@ -410,8 +485,26 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     if not enabled:
         console.print("[red]no enabled exchanges; check --exchanges / config[/red]")
         return 1
+    disabled = [name for name in requested if name not in CONNECTOR_CLASSES]
+    known = sorted(cfg["exchanges"])
+    inactive = [name for name in known if name not in enabled]
+    console.print(
+        f"[green]active exchanges:[/green] {', '.join(enabled) or '-'}"
+        + (f"  [dim](disabled: {', '.join(inactive)})[/dim]" if inactive else "")
+    )
+    if disabled:
+        console.print(f"[yellow]unknown exchange names ignored: {', '.join(disabled)}[/yellow]")
     triplets = [tuple(t) for t in cfg["triangular_triplets"]]
     spike = cfg["spike_filter"]
+    fxcfg = cfg.get("fx", {})
+
+    fx = ImpliedFxCross(
+        reference_base=str(fxcfg.get("reference_base", "BTC")),
+        smoothing_window=int(fxcfg.get("smoothing_window", 5)),
+        sanity_band_bps=float(fxcfg.get("sanity_band_bps", 200.0)),
+        conversion_haircut_bps=float(fxcfg.get("conversion_haircut_bps", 25.0)),
+        max_age_ms=float(fxcfg.get("max_age_ms", cfg["max_snapshot_age_ms"])),
+    )
 
     detector = SpreadDetector(
         min_spread_bps=min_spread,
@@ -419,6 +512,7 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         spike_window=int(spike["window"]),
         spike_deviation_bps=float(spike["deviation_bps"]),
         confirmations=int(spike["confirmations"]),
+        fx=fx,
     )
     fees = build_fee_schedules(cfg)
 
@@ -448,12 +542,14 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     executor: BaseExecutor | None = None
     executor_warnings: dict[str, str] = {}
     if trading:
-        portfolio = starting_portfolio(cfg, enabled)
+        portfolio = starting_portfolio(cfg, enabled, pairs)
         risk_cfg = RiskConfig.from_config(cfg.get("trading", {}))
         if args.min_spread is not None:
             risk_cfg.min_act_spread_bps = Decimal(str(args.min_spread))
         risk = RiskGuard(risk_cfg)
-        executor, executor_warnings = build_executor(mode, cfg, session, portfolio, fees, enabled)
+        executor, executor_warnings = build_executor(
+            mode, cfg, session, portfolio, fees, enabled, fx
+        )
         if mode == "live":
             console.print(Panel(LIVE_RISK_WARNING, border_style="red"))
         for warning in executor_warnings.values():
@@ -466,6 +562,7 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         min_spread_bps=min_spread,
         interval=interval,
         db_path=db_path,
+        fx=fx,
     )
     trading_panel = TradingPanel()
 
@@ -475,6 +572,7 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         while duration == 0 or time.monotonic() - started < duration:
             tick_started = time.monotonic()
             snaps = await fetch_all(connectors, pairs)
+            fx_states = fx.update(snaps)
             opps = detector.evaluate_tick(snaps, volume, fees, triplets)
             for opp in opps:
                 opp_logger.log(opp)
@@ -487,6 +585,11 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
             mids = {
                 key: snap.mid_price for key, snap in snaps.items() if snap.mid_price is not None
             }
+            fx_rates = {
+                cross.split("/")[1]: state.rate
+                for cross, state in fx_states.items()
+                if cross.startswith(f"{COMMON_QUOTE}/") and state.rate is not None
+            }
             dashboard.update(opps, snaps)
             trading_panel.update(
                 mode if trading else "monitor",
@@ -495,6 +598,7 @@ async def run(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
                 halted=risk.halted if risk is not None else False,
                 halt_reason=risk.halt_reason if risk is not None else None,
                 mids=mids,
+                fx_rates=fx_rates if trading else None,
             )
             live.update(dashboard.render(trading_panel.render() if trading else None))
             elapsed = time.monotonic() - tick_started

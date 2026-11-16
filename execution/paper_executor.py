@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from core.models import ArbitrageOpportunity, FeeSchedule, OrderBookSnapshot
+from engine.fx import ImpliedFxCross
 from engine.vwap_calculator import walk_depth, walk_depth_base
 from execution.base import (
     BaseExecutor,
@@ -31,17 +32,22 @@ class PaperExecutor(BaseExecutor):
     balance); sell leg walks real bids for the bought base amount. Each leg
     pays its exchange's taker fee on its notional. Fills are conservative:
     walked VWAP, never better than top-of-book, partial when books are shallow.
-    Moving base between exchanges is simulated as free and instant.
+    Moving base between exchanges is simulated as free and instant. Cross-quote
+    routes fill each leg natively in its own quote; the round trip leaves
+    inventory in the sell leg's quote, and realized P&L converts through the
+    supplied implied FX rates.
     """
 
     def __init__(
         self,
         portfolio: Portfolio,
         fees: dict[str, FeeSchedule],
+        fx: ImpliedFxCross | None = None,
     ) -> None:
         super().__init__()
         self.portfolio = portfolio
         self.fees = fees
+        self.fx = fx
         self.reports: list[ExecutionReport] = []
 
     @property
@@ -60,7 +66,7 @@ class PaperExecutor(BaseExecutor):
 
     async def execute(self, intent: OrderIntent) -> ExecutionReport:
         buy_snap = self.books.get((intent.buy_exchange, intent.pair))
-        sell_snap = self.books.get((intent.sell_exchange, intent.pair))
+        sell_snap = self.books.get((intent.sell_exchange, intent.sell_pair or intent.pair))
         if buy_snap is None or sell_snap is None:
             return self._reject(intent, f"missing book for {intent.pair}")
         fee_buy = self.fees.get(intent.buy_exchange, FeeSchedule())
@@ -99,6 +105,7 @@ class PaperExecutor(BaseExecutor):
             base_amount=sell_fill.base_filled,
             filled_quote=sell_fill.filled_quote,
             fee_quote=sell_fee,
+            fx_rates=self._fx_rates_for(intent),
         )
 
         buy_leg = LegFill(
@@ -120,6 +127,7 @@ class PaperExecutor(BaseExecutor):
         fully_filled = (
             buy_fill.fill_ratio >= Decimal(1) and sell_fill.base_filled == buy_fill.base_filled
         )
+        rates = self._fx_rates_for(intent)
         report = ExecutionReport(
             intent=intent,
             status=ExecutionStatus.FILLED if fully_filled else ExecutionStatus.PARTIAL,
@@ -127,12 +135,36 @@ class PaperExecutor(BaseExecutor):
             buy_fill=buy_leg,
             sell_fill=sell_leg,
             fees_quote=buy_fee + sell_fee,
-            realized_pnl_quote=pnl_from_legs(buy_leg, sell_leg),
+            realized_pnl_quote=pnl_from_legs(
+                buy_leg,
+                sell_leg,
+                self._leg_rate(intent.buy_exchange, rates),
+                self._leg_rate(intent.sell_exchange, rates),
+            ),
             simulated=True,
             submitted_at=intent.detected_at,
         )
         self.reports.append(report)
         return report
+
+    def _fx_rates_for(self, intent: OrderIntent) -> dict[str, Decimal]:
+        """Common-quote units per quote asset, derived from the executor's FX cross."""
+        if self.fx is None:
+            return {}
+        out: dict[str, Decimal] = {}
+        for exchange in (intent.buy_exchange, intent.sell_exchange):
+            asset = self.portfolio.quote_asset(exchange)
+            if asset == self.portfolio.common_quote or asset in out:
+                continue
+            rate = self.fx.rate(f"{self.portfolio.common_quote}/{asset}")
+            if rate is not None:
+                out[asset] = rate
+        return out
+
+    def _leg_rate(self, exchange: str, rates: dict[str, Decimal]) -> Decimal:
+        """Conversion rate for an exchange whose quote the rates dict knows."""
+        asset = self.portfolio.quote_asset(exchange)
+        return rates.get(asset, Decimal(1))
 
     def _reject(self, intent: OrderIntent, reason: str) -> ExecutionReport:
         report = ExecutionReport(

@@ -1,5 +1,10 @@
 # cex-orderbook-arbitrage configuration
 # Precedence: CLI flags > this file > built-in defaults.
+#
+# Quote currencies: binance/kraken/bybit/okx/kucoin/gate quote USDT (or USD/
+# EUR for kraken); bitflyer/bitbank/coincheck quote JPY. Add BTC/JPY (and
+# ETH/JPY) to --pairs to engage the Japanese books; cross-quote routes are
+# then evaluated through the implied FX cross defined in the fx section.
 
 exchanges:
   binance:
@@ -17,6 +22,37 @@ exchanges:
     maker_fee_bps: 10
     taker_fee_bps: 10
     rate_limit_per_sec: 5
+  okx:
+    enabled: true
+    maker_fee_bps: 8
+    taker_fee_bps: 10
+    rate_limit_per_sec: 10
+  kucoin:
+    enabled: true
+    maker_fee_bps: 10
+    taker_fee_bps: 10
+    rate_limit_per_sec: 8
+  gate:
+    enabled: true
+    maker_fee_bps: 16
+    taker_fee_bps: 20
+    rate_limit_per_sec: 8
+  # Fees below are documented defaults: verify them for your tier/volume.
+  bitflyer:
+    enabled: true
+    maker_fee_bps: 12
+    taker_fee_bps: 12
+    rate_limit_per_sec: 1.5
+  bitbank:
+    enabled: true
+    maker_fee_bps: 12
+    taker_fee_bps: 12
+    rate_limit_per_sec: 5
+  coincheck:
+    enabled: true
+    maker_fee_bps: 15
+    taker_fee_bps: 25
+    rate_limit_per_sec: 1.5
 
 # Seconds between polling ticks.
 poll_interval: 2.0
@@ -48,17 +84,36 @@ spike_filter:
 triangular_triplets:
   - [BTC/USDT, ETH/BTC, ETH/USDT]
 
+# Market-implied FX cross rates between quote currencies (e.g. JPY/USDT),
+# derived from the reference base traded against both quotes: no external
+# FX feed. Cross-quote routes are normalized into the common quote (USDT)
+# with a conversion haircut and are suppressed while the implied rate is
+# stale or outside the sanity band.
+fx:
+  reference_base: BTC
+  smoothing_window: 5
+  sanity_band_bps: 200
+  conversion_haircut_bps: 25
+  max_age_ms: 5000
+
 # Trading configuration; active only when --mode paper/testnet/live is used.
 # Monitor mode ignores this section entirely.
 trading:
   # Default operating mode when --mode is absent: monitor | paper | testnet | live.
   mode: monitor
 
-  # Paper-mode virtual starting balances per exchange, in quote currency.
+  # Paper-mode virtual starting balances per exchange, in that exchange's
+  # quote currency (USDT exchanges in USDT, Japanese exchanges in JPY).
   starting_balances:
     binance: 1000
     kraken: 1000
     bybit: 1000
+    okx: 1000
+    kucoin: 1000
+    gate: 1000
+    bitflyer: 150000
+    bitbank: 150000
+    coincheck: 150000
 
   # Risk limits (quote currency / bps). The circuit breaker halts all trading
   # for the session once realized P&L falls below -daily_loss_limit_quote.
