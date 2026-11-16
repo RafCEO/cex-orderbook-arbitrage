@@ -98,3 +98,103 @@ class TestDashboardPureHelpers:
         dash = self._dashboard()
         table = dash._routes_table()
         assert table.row_count == 1  # "no routes evaluated yet" placeholder
+
+
+class TestFxDashboard:
+    def _fx_dashboard(self) -> Dashboard:
+        from cli.dashboard import Dashboard
+        from engine.fx import ImpliedFxCross
+
+        return Dashboard(
+            connectors={},
+            pairs=["BTC/USDT", "BTC/JPY"],
+            volume_quote=1000.0,
+            min_spread_bps=5.0,
+            interval=2.0,
+            db_path="data/session.db",
+            fx=ImpliedFxCross(smoothing_window=1),
+        )
+
+    def test_fx_line_none_without_states(self) -> None:
+        dash = self._fx_dashboard()
+        assert dash._fx_line() is None
+
+    def test_fx_line_renders_cross_with_age(self) -> None:
+        dash = self._fx_dashboard()
+        assert dash.fx is not None
+
+        from tests.fakes import make_level, make_snapshot
+
+        snaps = {
+            ("binance", "BTC/USDT"): make_snapshot(
+                bids=[make_level("64400", "1")],
+                asks=[make_level("64410", "1")],
+                exchange="binance",
+                pair="BTC/USDT",
+            ),
+            ("bitflyer", "BTC/JPY"): make_snapshot(
+                bids=[make_level("10266000", "1")],
+                asks=[make_level("10266100", "1")],
+                exchange="bitflyer",
+                pair="BTC/JPY",
+            ),
+        }
+        dash.fx.update(snaps)
+        line = dash._fx_line()
+        assert line is not None
+        assert "JPY/USDT" in line.plain
+        assert "(age" in line.plain
+
+    def test_routes_table_renders_fx_tag(self) -> None:
+        dash = self._fx_dashboard()
+        from tests.fakes import make_opportunity
+
+        opp = make_opportunity(
+            pair="BTC/USDT",
+            sell_exchange="bitflyer",
+            sell_pair="BTC/JPY",
+            fx_quote="JPY/USDT",
+            fx_rate=159.5,
+        )
+        dash.update([opp], {})
+        table = dash._routes_table()
+        first_cell = table.columns[0]._cells[0]
+        assert isinstance(first_cell, Text)
+        assert "@fx JPY/USDT" in first_cell.plain
+
+    def test_liquidity_cell_uses_sell_pair(self) -> None:
+        dash = self._fx_dashboard()
+
+        from tests.fakes import make_level, make_opportunity, make_snapshot
+
+        buy = make_snapshot(
+            bids=[make_level("64400", "1")],
+            asks=[make_level("64410", "1")],
+            exchange="binance",
+            pair="BTC/USDT",
+        )
+        sell = make_snapshot(
+            bids=[make_level("10266000", "1")],
+            asks=[make_level("10266100", "1")],
+            exchange="bitflyer",
+            pair="BTC/JPY",
+        )
+        dash.update(
+            [
+                make_opportunity(
+                    pair="BTC/USDT",
+                    buy_exchange="binance",
+                    sell_exchange="bitflyer",
+                    sell_pair="BTC/JPY",
+                    fx_quote="JPY/USDT",
+                )
+            ],
+            {("binance", "BTC/USDT"): buy, ("bitflyer", "BTC/JPY"): sell},
+        )
+        opp = dash._last_opps[0]
+        cell = dash._liquidity_cell(opp)
+        assert cell != "-"
+
+    def test_header_contains_fx_line_when_present(self) -> None:
+        dash = self._fx_dashboard()
+        assert dash._header() is not None

@@ -169,7 +169,9 @@ def test_trade_row_flattens_report_with_missing_legs() -> None:
     row = trade_row(rejected, "sess1")
     assert row[16] == "rejected"
     assert row[8] == 0.0  # buy_base zero when leg absent
-    assert row[17] == "sess1"
+    assert row[17] == 0.0  # fx_rate defaults to 0 on same-quote intents
+    assert row[18] == ""  # fx_quote empty on same-quote intents
+    assert row[19] == "sess1"
 
 
 def test_insert_sql_columns_align_with_schema() -> None:
@@ -180,7 +182,7 @@ def test_insert_sql_columns_align_with_schema() -> None:
     ]
     insert_cols = TRADES_INSERT_SQL.split("(")[1].split(")")[0].replace(" ", "").split(",")
     assert insert_cols == columns
-    assert len(insert_cols) == 18
+    assert len(insert_cols) == 20
 
 
 async def test_trade_stats_and_export_exclude_previous_sessions(
