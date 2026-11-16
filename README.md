@@ -3,12 +3,31 @@
 [![CI](https://github.com/RafCEO/cex-orderbook-arbitrage/actions/workflows/ci.yml/badge.svg)](https://github.com/RafCEO/cex-orderbook-arbitrage/actions/workflows/ci.yml)
 
 Cross-exchange crypto spread monitor and orderbook depth analyzer with an
-optional execution layer. Polls public REST orderbooks from Binance, Kraken
-and Bybit, walks real depth to compute volume-weighted fill prices, and
-evaluates cross-exchange and triangular routes net of taker fees, slippage
-and stale-data risk. Monitor mode is read-only analytics on public data; the
-`paper`, `testnet` and `live` modes add an execution layer on top of the same
-detection pipeline.
+optional execution layer. Polls public REST orderbooks from Binance, Kraken,
+Bybit, OKX, KuCoin and Gate.io (USDT-quoted) plus bitFlyer, bitbank and
+Coincheck (JPY-quoted), walks real depth to compute volume-weighted fill
+prices, and evaluates cross-exchange and triangular routes net of taker fees,
+slippage and stale-data risk. Japanese books join the same comparison through
+a market-implied FX cross (no external FX feed). Monitor mode is read-only
+analytics on public data; the `paper`, `testnet` and `live` modes add an
+execution layer on top of the same detection pipeline.
+
+## Exchange coverage
+
+| Exchange | Quote | Pairs (examples) | Fee defaults (maker/taker bps) | Notes |
+|---|---|---|---|---|
+| binance | USDT | BTC/USDT, ETH/USDT, ETH/BTC | 10/10 | live/testnet trading supported |
+| kraken | USDT/USD/EUR | BTC/USDT, ETH/USDT | 16/26 | trading intentionally unsupported |
+| bybit | USDT | BTC/USDT, ETH/USDT, ETH/BTC | 10/10 | live/testnet trading supported |
+| okx | USDT | BTC/USDT, ETH/USDT | 8/10 | |
+| kucoin | USDT | BTC/USDT, ETH/USDT | 10/10 | `/level2_100` endpoint, sliced locally |
+| gate | USDT | BTC/USDT, ETH/USDT | 16/20 | |
+| bitflyer | JPY | BTC/JPY, ETH/JPY | 12/12 | no USDT pairs; no server timestamp |
+| bitbank | JPY | BTC/JPY, ETH/JPY | 12/12 | lower-case symbol path |
+| coincheck | JPY | BTC/JPY, ETH/JPY | 15/25 | levels may arrive unsorted |
+
+Fee defaults are documented approximations: verify them against your tier,
+volume and any VIP/rebate structure before acting on reported net spreads.
 
 ## Architecture
 
@@ -93,8 +112,15 @@ shutdown. Each tick:
 | `connectors/binance.py` | Binance spot depth endpoint |
 | `connectors/bybit.py` | Bybit v5 spot orderbook endpoint |
 | `connectors/kraken.py` | Kraken public depth endpoint with XBT/BTC normalization |
-| `engine/vwap_calculator.py` | Depth-walk VWAP, slippage, cross-exchange and triangular route math |
-| `engine/detector.py` | Latency guard, per-pair route enumeration, rolling-median spike filter |
+| `connectors/okx.py` | OKX v5 books endpoint (dash symbols, string ts) |
+| `connectors/kucoin.py` | KuCoin level2 endpoint (level2_100 + local slice) |
+| `connectors/gate.py` | Gate.io v4 order book endpoint (underscore symbols, ms timestamps) |
+| `connectors/bitflyer.py` | bitFlyer board endpoint (JPY, numeric levels, receive-time ts) |
+| `connectors/bitbank.py` | bitbank public depth (JPY, lower-case path, ms timestamp) |
+| `connectors/coincheck.py` | Coincheck order books (JPY, unsorted levels, receive-time ts) |
+| `engine/vwap_calculator.py` | Depth-walk VWAP, slippage, cross-exchange, cross-quote and triangular route math |
+| `engine/detector.py` | Latency guard, per-base route enumeration, rolling-median spike filter |
+| `engine/fx.py` | Implied FX crosses: mid ratio, median smoothing, staleness and sanity guards |
 | `execution/base.py` | OrderIntent / ExecutionReport models, executor contract, intent builder |
 | `execution/auth.py` | Pure signing functions for Binance, Bybit and Kraken private endpoints |
 | `execution/paper_executor.py` | Simulated two-leg fills against live fetched orderbooks |
@@ -161,6 +187,40 @@ rolling median by more than `deviation_bps` (default 25) unless the route has
 printed `net >= min_spread_bps` for `confirmations` (default 2) consecutive
 ticks, which marks the shift as persistent rather than a stale-quote artifact.
 
+**Implied FX cross.** Japanese exchanges quote BTC/JPY while global exchanges
+quote BTC/USDT; a direct price comparison across those quotes is meaningless.
+For every ordered quote pair the engine derives a market-implied rate from a
+reference base traded against both quotes:
+
+```
+rate(JPY/USDT) = mid(BTC/JPY) / mid(BTC/USDT)     freshest snapshots
+smoothed rate  = rolling median over last N ticks (default 5)
+```
+
+Two guards protect route economics. A staleness guard (same `max_age_ms` as
+snapshots) refuses to use a cross whose inputs or last update are too old. A
+sanity band marks the cross degraded when a raw reading deviates more than
+`sanity_band_bps` (default 200) from the smoothing history's median; while
+degraded, cross-quote routes stop being emitted so a broken conversion never
+looks like free money. Conversion is not free: a configurable haircut
+(`conversion_haircut_bps`, default 25, approximating stablecoin/fiat
+conversion cost) is charged exactly once on the foreign leg. For a route
+buying in the common quote (USDT) and selling in the foreign quote:
+
+```
+normalized sell price = p_foreign * rate * (1 - haircut/1e4)
+```
+
+For the reverse direction the foreign buy cost is grossed up by the same
+haircut. Cross-quote opportunities carry `fx_rate` and `fx_quote` (e.g.
+JPY/USDT) so the dashboard, SQLite tables and CSV exports show when a route
+rides an FX conversion. Same-quote routes are bit-for-bit unaffected.
+
+Paper execution across quotes fills both legs natively: buy BTC/JPY with JPY
+balances on the Japanese exchange, sell BTC/USDT on the global one. The round
+trip leaves inventory in the other quote currency; portfolio equity marks it
+through the same implied rate. Triangular routes stay same-quote only.
+
 ## Quickstart
 
 Python 3.11+ required.
@@ -203,9 +263,15 @@ python main.py --pairs BTC/USDT,ETH/USDT --volume 1000 --duration 20 --export /t
 
 ```yaml
 exchanges:
-  binance: { enabled: true, maker_fee_bps: 10, taker_fee_bps: 10, rate_limit_per_sec: 10 }
-  kraken:  { enabled: true, maker_fee_bps: 16, taker_fee_bps: 26, rate_limit_per_sec: 1 }
-  bybit:   { enabled: true, maker_fee_bps: 10, taker_fee_bps: 10, rate_limit_per_sec: 5 }
+  binance:   { enabled: true, maker_fee_bps: 10, taker_fee_bps: 10, rate_limit_per_sec: 10 }
+  kraken:    { enabled: true, maker_fee_bps: 16, taker_fee_bps: 26, rate_limit_per_sec: 1 }
+  bybit:     { enabled: true, maker_fee_bps: 10, taker_fee_bps: 10, rate_limit_per_sec: 5 }
+  okx:       { enabled: true, maker_fee_bps: 8,  taker_fee_bps: 10, rate_limit_per_sec: 10 }
+  kucoin:    { enabled: true, maker_fee_bps: 10, taker_fee_bps: 10, rate_limit_per_sec: 8 }
+  gate:      { enabled: true, maker_fee_bps: 16, taker_fee_bps: 20, rate_limit_per_sec: 8 }
+  bitflyer:  { enabled: true, maker_fee_bps: 12, taker_fee_bps: 12, rate_limit_per_sec: 1.5 }
+  bitbank:   { enabled: true, maker_fee_bps: 12, taker_fee_bps: 12, rate_limit_per_sec: 5 }
+  coincheck: { enabled: true, maker_fee_bps: 15, taker_fee_bps: 25, rate_limit_per_sec: 1.5 }
 poll_interval: 2.0
 default_volume_quote: 1000
 min_spread_bps: 5.0
@@ -215,10 +281,20 @@ db_path: data/session.db
 spike_filter: { window: 20, deviation_bps: 25, confirmations: 2 }
 triangular_triplets:
   - [BTC/USDT, ETH/BTC, ETH/USDT]
+fx:
+  reference_base: BTC
+  smoothing_window: 5
+  sanity_band_bps: 200
+  conversion_haircut_bps: 25
+  max_age_ms: 5000
 ```
 
 `triangular_triplets` entries are `[base/quote, mid/base, mid/quote]` roles;
-each triplet is evaluated on every exchange that lists all three pairs.
+each triplet is evaluated on every exchange that lists all three pairs. The
+default `--pairs` stays `BTC/USDT,ETH/USDT`; add `BTC/JPY` (and `ETH/JPY`) to
+engage the Japanese books and the implied FX cross. Quote currencies are
+per-exchange properties; the portfolio's `starting_balances` are denominated
+in each exchange's own quote (USDT exchanges in USDT, Japanese ones in JPY).
 
 ## Trading modes
 
@@ -248,7 +324,7 @@ and order style:
 ```yaml
 trading:
   mode: monitor
-  starting_balances: { binance: 1000, kraken: 1000, bybit: 1000 }
+  starting_balances: { binance: 1000, bybit: 1000, bitflyer: 150000 }
   max_trade_quote: 100
   max_exposure_quote: 500
   daily_loss_limit_quote: 50
@@ -256,6 +332,11 @@ trading:
   market_orders: false
   price_buffer_bps: 5.0
 ```
+
+Balances are per exchange in that exchange's quote currency. In paper mode a
+cross-quote round trip fills both legs natively (JPY balances buy the JPY
+leg), leaves inventory in the other quote, and reports equity in USDT through
+the live implied FX rate.
 
 Executed trades persist to a `trades` table in the same SQLite database.
 Every row is stamped with a run-scoped `session_id`; the summary panel, stats

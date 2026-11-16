@@ -3,6 +3,32 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] - 2026-11-16
+
+### Added
+- Six exchange connectors: OKX, KuCoin and Gate.io (USDT books) plus bitFlyer,
+  bitbank and Coincheck (JPY books), all public REST with per-exchange symbol
+  mapping, Decimal-safe parsing, timestamp handling (including receive-time
+  fallback) and depth slicing.
+- Implied FX cross engine (`engine/fx.py`): market-implied quote-currency
+  conversion from a reference base (default BTC), rolling-median smoothing,
+  staleness guard, sanity band with degraded state and a conversion haircut.
+- Cross-quote arbitrage routing: routes across different quote currencies are
+  normalized into a common quote (USDT) with the haircut charged once;
+  opportunities carry `fx_rate`/`fx_quote`; same-quote behavior unchanged.
+- Per-quote-currency portfolio: starting balances in each exchange's quote,
+  mixed-quote round trips booked natively, equity and inventory marked in
+  USDT through the live implied rate.
+- Dashboard: implied-cross header line with age, `@fx` tag on cross-quote
+  routes, quote-aware balance table; startup prints active vs disabled
+  exchanges; trades table gained `fx_rate`/`fx_quote` columns with migration.
+- README exchange coverage table and FX normalization notes; config `fx`
+  section and JPY balance defaults.
+
+### Changed
+- Detector groups snapshots by base asset so BTC/JPY and BTC/USDT books
+  compete; fetch loop skips pairs an exchange does not list.
+
 ## [1.2.0] - 2026-11-15
 
 ### Added
